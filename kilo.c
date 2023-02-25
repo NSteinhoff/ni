@@ -1,4 +1,5 @@
 /*** includes ***/
+#include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
@@ -8,7 +9,11 @@
 
 /*** defines ***/
 
+#define FPS 1
+#define TENTHS_OF_SEC 10 / FPS
 #define NORETURN __attribute__((noreturn)) void
+// Mask 00011111 i.e. zero out the upper three bits
+#define CTRL_KEY(k)  ((k) &  0x1f)
 
 /*** declarations ***/
 
@@ -25,12 +30,16 @@ static struct termios term_orig;
 int main(void) {
 	enable_raw_mode();
 
-	for (char c = 0; c != 'q';) {
+	char c;
+	while (true) {
 		c = 0;
-		if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN)
-			die("read");
+		ssize_t characters_read = read(STDIN_FILENO, &c, 1);
+		if (characters_read == -1 && errno != EAGAIN) die("read");
+
 		if (iscntrl(c)) printf("%d\r\n", c);
 		else printf("%d ('%c')\r\n", c, c);
+
+		if (c == CTRL_KEY('q')) break;
 	}
 
 	return 0;
@@ -55,7 +64,7 @@ static void enable_raw_mode(void) {
 	term_raw.c_cflag |= (unsigned)(CS8);
 	term_raw.c_lflag &= ~(unsigned)(ECHO | ICANON | ISIG | IEXTEN);
 	term_raw.c_cc[VMIN] = 0;
-	term_raw.c_cc[VTIME] = 1;
+	term_raw.c_cc[VTIME] = TENTHS_OF_SEC;
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) die("tcsetattr");
 }
 
