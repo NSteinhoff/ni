@@ -1,5 +1,7 @@
-/*** includes ***/
-#include <assert.h>
+/// Kilo is a minimalist text editor written in plain C without external
+/// libraries.
+
+// -------------------------------- Includes ----------------------------------
 #include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -9,17 +11,15 @@
 #include <termios.h>
 #include <unistd.h>
 
-/*** defines ***/
-
+// --------------------------------- Defines ----------------------------------
+#define KILO_VERSION "0.0.1"
 #define FPS 1
 #define NORETURN __attribute__((noreturn)) void
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
-/*** typedefs ***/
+// ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
-
-/*** declarations ***/
 
 typedef struct Buffer {
 	char *data;
@@ -31,17 +31,15 @@ typedef struct Editor {
 	struct termios term_orig;
 } Editor;
 
-/*** data ***/
-
+// ---------------------------------- Data ------------------------------------
 static Editor E;
 
-/*** terminal ***/
-
+// -------------------------------- Terminal ----------------------------------
 static NORETURN die(const char *s) {
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
 	perror(s);
-	exit(1);
+	exit(EXIT_FAILURE);
 }
 
 static void reset_term(void) {
@@ -97,8 +95,7 @@ static int get_cursor_position(uint *rows, uint *cols) {
 	buf[i] = '\0';
 
 	if (buf[0] != '\x1b' || buf[1] != '[') return -1;
-	if (sscanf(&buf[1], "[%d;%dR", rows, cols) != 2)
-		return -1;
+	if (sscanf(&buf[1], "[%d;%dR", rows, cols) != 2) return -1;
 
 	return 0;
 }
@@ -110,21 +107,19 @@ static int get_window_size(uint *rows, uint *cols) {
 	return 0;
 }
 
-/*** input ***/
-
+// ---------------------------------- Input -----------------------------------
 static void process_key(void) {
 	char c = read_key();
 	switch (c) {
 	case CTRL_KEY('q'):
 		write(STDOUT_FILENO, "\x1b[2J", 4);
 		write(STDOUT_FILENO, "\x1b[H", 3);
-		exit(0);
+		exit(EXIT_SUCCESS);
 	default: break;
 	}
 }
 
-/*** output ***/
-
+// --------------------------------- Output -----------------------------------
 static void buffer_append(Buffer *buffer, const char *s, size_t len) {
 	char *new = realloc(buffer->data,
 			    sizeof *buffer->data * (buffer->len + len));
@@ -139,28 +134,46 @@ static void buffer_free(Buffer *buffer) {
 	free(buffer->data);
 }
 
+static void draw_welcome_message(Buffer *buffer) {
+	char welcome[80];
+	int printed = snprintf(welcome, sizeof welcome,
+			       "Kilo editor -- version %s", KILO_VERSION);
+	if (printed == -1) {
+		perror("snprintf");
+		exit(EXIT_FAILURE);
+	}
+	uint len = (uint)printed > E.cols ? E.cols : (uint)printed;
+	uint padding = (E.cols - len) / 2;
+	if (padding) {
+		buffer_append(buffer, "~", 1);
+		padding--;
+	}
+	while (padding--) {
+		buffer_append(buffer, " ", 1);
+	}
+	buffer_append(buffer, welcome, len);
+}
+
 static void draw_rows(Buffer *buffer) {
 	for (uint y = 0; y < E.rows; y++) {
-		buffer_append(buffer, "~", 1);
-		if (y < E.rows - 1)
-			buffer_append(buffer, "\r\n", 2);
+		if (y == E.rows / 3) draw_welcome_message(buffer);
+		else buffer_append(buffer, "~", 1);
+		buffer_append(buffer, "\x1b[K", 3); // clear till EOL
+		if (y < E.rows - 1) buffer_append(buffer, "\r\n", 2);
 	}
 }
 
 static void refresh_screen(void) {
 	Buffer buffer = {0};
-	buffer_append(&buffer, "\x1b[?25l", 4);
-	buffer_append(&buffer, "\x1b[2J", 4);
-	buffer_append(&buffer, "\x1b[H", 3);
+	buffer_append(&buffer, "\x1b[?25l", 4); // hide cursor
 	draw_rows(&buffer);
-	buffer_append(&buffer, "\x1b[H", 3);
-	buffer_append(&buffer, "\x1b[?25h", 4);
+	buffer_append(&buffer, "\x1b[H", 3);    // move cursor to home
+	buffer_append(&buffer, "\x1b[?25h", 4); // show cursor
 	write(STDOUT_FILENO, buffer.data, buffer.len);
 	buffer_free(&buffer);
 }
 
-/*** main ***/
-
+// ---------------------------------- Main ------------------------------------
 static void init(void) {
 	enable_raw_mode();
 	if (get_window_size(&E.rows, &E.cols) == -1) die("get_window_size");
