@@ -1,8 +1,8 @@
 /// KILO
 /// ====
 ///
-/// Kilo is a minimalist text editor written in plain C without using external
-/// libraries.
+/// Kilo is a minimalist modal text editor written in plain C without using
+/// external libraries.
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>
@@ -16,7 +16,6 @@
 
 // --------------------------------- Defines ----------------------------------
 #define KILO_VERSION "0.0.1"
-#define FPS 1
 #define NORETURN __attribute__((noreturn)) void
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
@@ -78,14 +77,12 @@ static void enable_raw_mode(void) {
 
 	// Set terminal to raw mode.
 	Term term_raw = E.term_orig;
-	// clang-format off
 	term_raw.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
 	term_raw.c_oflag &= ~(uint)(OPOST);
-	term_raw.c_cflag |=  (uint)(CS8);
+	term_raw.c_cflag |= (uint)(CS8);
 	term_raw.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
-	// clang-format on
 	term_raw.c_cc[VMIN] = 0;
-	term_raw.c_cc[VTIME] = 10 / FPS;
+	term_raw.c_cc[VTIME] = 10;
 
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) die("tcsetattr");
 }
@@ -197,6 +194,7 @@ static void cursor_move(int c) {
 static void process_key(void) {
 	int c = read_key();
 	uint half_screen = E.rows / 2;
+
 	switch (E.mode) {
 	case 'n':
 		switch (c) {
@@ -215,7 +213,18 @@ static void process_key(void) {
 			if (E.rowoff > 0) E.rowoff--;
 			break;
 
-		// Half-screen up and down
+		// TODO: Word wise movement
+		case 'w':
+		case 'e':
+		case 'b': break;
+
+		// Start/End of line
+		case '0': E.cx = 0; break;
+		case '$':
+			if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
+			break;
+
+		// Half-screen up/down
 		case CTRL_KEY('d'):
 			while (half_screen--) cursor_move('j');
 			break;
