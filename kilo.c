@@ -23,6 +23,7 @@
 
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
+typedef struct termios Term;
 
 typedef enum EditorKey {
 	KEY_UP = 1000,
@@ -33,27 +34,32 @@ typedef enum EditorKey {
 	KEY_PAGE_DOWN,
 } EditorKey;
 
-typedef struct Buffer {
+typedef struct ScreenBuffer {
 	char *data;
 	size_t len;
-} Buffer;
+} ScreenBuffer;
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
+typedef struct Line {
+	size_t len;
+	char *chars;
+} Line;
+
 typedef struct Editor {
-	struct termios term_orig;
+	Term term_orig;
+	Line *lines;
+	uint numlines;
+	uint linescap;
 	uint cx, cy;
+	uint rowoff, coloff;
 	uint rows, cols;
 	char mode;
-	// 7 bytes of padding
 } Editor;
-#pragma clang diagnostic pop
 
 // ---------------------------------- Data ------------------------------------
 static Editor E;
 
 // -------------------------------- Terminal ----------------------------------
-static NORETURN die(const char *s) {
+static NORETURN die(const char s[]) {
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
 	perror(s);
@@ -71,7 +77,7 @@ static void enable_raw_mode(void) {
 	atexit(reset_term);
 
 	// Set terminal to raw mode.
-	struct termios term_raw = E.term_orig;
+	Term term_raw = E.term_orig;
 	// clang-format off
 	term_raw.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
 	term_raw.c_oflag &= ~(uint)(OPOST);
@@ -167,6 +173,27 @@ static int get_window_size(uint *rows, uint *cols) {
 }
 
 // ---------------------------------- Input -----------------------------------
+static void cursor_move(int c) {
+	switch (c) {
+	case 'k':
+	case KEY_UP: E.cy > 0 && E.cy--; break;
+	case 'j':
+	case KEY_DOWN:
+		if (E.numlines != 0 && E.cy < E.numlines - 1) E.cy++;
+		break;
+	case 'h':
+	case KEY_LEFT: E.cx > 0 && E.cx--; break;
+	case 'l':
+	case KEY_RIGHT:
+		if (E.numlines != 0 && E.cx < E.lines[E.cy].len - 1) E.cx++;
+		break;
+	default: return;
+	}
+
+	if (E.lines[E.cy].len == 0) E.cx = 0;
+	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+}
+
 static void process_key(void) {
 	int c = read_key();
 	switch (E.mode) {
@@ -177,101 +204,182 @@ static void process_key(void) {
 			write(STDOUT_FILENO, "\x1b[H", 3);
 			exit(EXIT_SUCCESS);
 
-		case 'k':
-		case KEY_UP: E.cy > 0 && E.cy--; break;
-		case 'j':
-		case KEY_DOWN: E.cy < E.rows - 1 && E.cy++; break;
-		case 'h':
-		case KEY_LEFT: E.cx > 0 && E.cx--; break;
-		case 'l':
-		case KEY_RIGHT: E.cx < E.cols - 1 && E.cx++; break;
+		case CTRL_KEY('l'): E.coloff++; break;
+		case CTRL_KEY('h'):
+			if (E.coloff > 0) E.coloff--;
+			break;
+		case CTRL_KEY('e'): E.rowoff++; break;
+		case CTRL_KEY('y'):
+			if (E.rowoff > 0) E.rowoff--;
+			break;
 
-		default: break;
+		default: cursor_move(c);
 		}
 		break;
 	default: break;
 	}
 }
 
-// --------------------------------- Output -----------------------------------
-static int buffer_append(Buffer *buffer, const char *s, size_t len) {
-	char *new = realloc(buffer->data,
-			    sizeof *buffer->data * (buffer->len + len));
-	if (new == NULL) return -1;
-	buffer->data = new;
+static void editor_scroll(void) {
+	if (E.cy < E.rowoff) E.rowoff = E.cy;
+	if ((E.cy + 1) > E.rowoff + (E.rows - 1))
+		E.rowoff = (E.cy + 1) - (E.rows - 1);
+	if (E.cx < E.coloff) E.coloff = E.cx;
+	if ((E.cx + 1) > E.coloff + E.cols) E.coloff = (E.cx + 1) - E.cols;
+}
 
-	memcpy(&buffer->data[buffer->len], s, len);
-	buffer->len += len;
+// --------------------------------- Output -----------------------------------
+static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
+	char *new = realloc(screen->data,
+			    sizeof *screen->data * (screen->len + len));
+	if (new == NULL) return -1;
+	screen->data = new;
+
+	memcpy(&screen->data[screen->len], s, len);
+	screen->len += len;
 
 	return 0;
 }
 
-static void buffer_free(Buffer *buffer) {
-	free(buffer->data);
+static void screen_free(ScreenBuffer *screen) {
+	free(screen->data);
 }
 
-static void draw_welcome_message(Buffer *buffer) {
+static void draw_welcome_message(ScreenBuffer *screen) {
 	char s[80];
 	int len_required = snprintf(s, sizeof s, "Kilo editor -- version %s",
 				    KILO_VERSION);
 	if (len_required == -1) {
-		perror("snprintf");
-		exit(EXIT_FAILURE);
+		die("snprintf");
 	}
 	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
 	uint padding = (E.cols - len) / 2;
 	if (padding) {
-		buffer_append(buffer, "~", 1);
+		screen_append(screen, "~", 1);
 		padding--;
 	}
 	while (padding--) {
-		buffer_append(buffer, " ", 1);
+		screen_append(screen, " ", 1);
 	}
-	buffer_append(buffer, s, len);
+	screen_append(screen, s, len);
 }
 
-static void draw_rows(Buffer *buffer) {
+static int draw_cursor_pos(ScreenBuffer *screen) {
+	char buf[12];
+	int printed = snprintf(buf, sizeof buf - 1, "[%d:%d]", E.cy, E.cx);
+	if (printed == -1) return -1;
+	uint len = printed < (int)sizeof buf ? (uint)printed : sizeof buf;
+	uint padding = E.cols - len;
+	while (padding--) {
+		screen_append(screen, " ", 1);
+	}
+	screen_append(screen, buf, strlen(buf));
+
+	return 0;
+}
+
+static void draw_rows(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
-		if (y == E.rows / 3) draw_welcome_message(buffer);
-		else buffer_append(buffer, "~", 1);
-		buffer_append(buffer, "\x1b[K", 3); // clear till EOL
-		if (y < E.rows - 1) buffer_append(buffer, "\r\n", 2);
+		uint idx = y + E.rowoff;
+
+		if (y == E.rows - 1) {
+			draw_cursor_pos(screen);
+		} else if (idx >= E.numlines) {
+			if (E.numlines == 0 && y == E.rows / 3)
+				draw_welcome_message(screen);
+			else screen_append(screen, "~", 1);
+		} else if (E.coloff < E.lines[idx].len) {
+			uint len = E.lines[idx].len - E.coloff <= E.cols
+					 ? (uint)(E.lines[idx].len - E.coloff)
+					 : E.cols;
+			screen_append(screen, E.lines[idx].chars + E.coloff,
+				      len);
+		}
+
+		screen_append(screen, "\x1b[K", 3); // clear till EOL
+		if (y < E.rows - 1) screen_append(screen, "\r\n", 2);
 	}
 }
 
-static int place_cursor(Buffer *buffer, uint x, uint y) {
+static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 	char s[32];
 	int len_required = snprintf(s, sizeof s, "\x1b[%d;%dH", y + 1, x + 1);
 	if (len_required == -1 || len_required >= (int)sizeof s) return -1;
-	buffer_append(buffer, s, (uint)len_required);
+	screen_append(screen, s, (uint)len_required);
 
 	return 0;
 }
 
 static void refresh_screen(void) {
-	Buffer buffer = {0};
-	buffer_append(&buffer, "\x1b[?25l", 4); // hide cursor
+	ScreenBuffer screen = {0};
+	editor_scroll();
+	screen_append(&screen, "\x1b[?25l", 4); // hide cursor
 
-	place_cursor(&buffer, 0, 0);
-	draw_rows(&buffer);
-	place_cursor(&buffer, E.cx, E.cy);
+	place_cursor(&screen, 0, 0);
+	draw_rows(&screen);
+	place_cursor(&screen, E.cx - E.coloff, E.cy - E.rowoff);
 
-	buffer_append(&buffer, "\x1b[?25h", 4); // show cursor
-	write(STDOUT_FILENO, buffer.data, buffer.len);
-	buffer_free(&buffer);
+	screen_append(&screen, "\x1b[?25h", 4); // show cursor
+	write(STDOUT_FILENO, screen.data, screen.len);
+	screen_free(&screen);
+}
+
+// -------------------------------- File I/O ----------------------------------
+static void editor_append_line(const char *line, size_t len) {
+	if (E.numlines + 1 > E.linescap) {
+		E.linescap = E.linescap == 0 ? 2 : E.linescap * 2;
+		Line *lines = realloc(E.lines, (sizeof *lines) * E.linescap);
+		if (lines) E.lines = lines;
+		else die("realloc");
+	}
+
+	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+		len--;
+
+	E.lines[E.numlines].chars = strndup(line, len);
+	E.lines[E.numlines].len = len;
+	E.numlines++;
+}
+
+static void editor_open(const char *restrict fname) {
+	FILE *f = fopen(fname, "r");
+	if (!f) die("fopen");
+
+	E.numlines = 0;
+	E.linescap = 0;
+	if (E.lines) free(E.lines);
+	E.lines = NULL;
+
+	char *line = NULL;
+	size_t linecap = 0;
+	ssize_t bytes_read;
+
+	while ((bytes_read = getline(&line, &linecap, f)) != -1)
+		editor_append_line(line, (size_t)bytes_read);
+
+	if (line) free(line);
+	fclose(f);
 }
 
 // ---------------------------------- Main ------------------------------------
-static void init(void) {
-	enable_raw_mode();
+static void editor_init(void) {
 	E.mode = 'n';
+	E.numlines = 0;
+	E.linescap = 0;
+	E.lines = NULL;
+	E.rowoff = 0;
+	E.coloff = 0;
 	E.cx = 0;
 	E.cy = 0;
 	if (get_window_size(&E.rows, &E.cols) == -1) die("get_window_size");
 }
 
-int main(void) {
-	init();
+int main(int argc, char *argv[]) {
+	enable_raw_mode();
+	editor_init();
+	if (argc >= 2) {
+		editor_open(argv[1]);
+	}
 
 	while (true) {
 		refresh_screen();

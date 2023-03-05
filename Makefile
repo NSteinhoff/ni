@@ -1,6 +1,6 @@
 CC     := clang
 CFLAGS := -std=c17 -g -Werror -Wall -Wextra -Weverything -pedantic
-CFLAGS += -Wno-shadow -Wno-declaration-after-statement
+CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded
 
 kilo: kilo.c
 	$(CC) $(CFLAGS) -o kilo $<
