@@ -1,4 +1,7 @@
-/// Kilo is a minimalist text editor written in plain C without external
+/// KILO
+/// ====
+///
+/// Kilo is a minimalist text editor written in plain C without using external
 /// libraries.
 
 // -------------------------------- Includes ----------------------------------
@@ -21,16 +24,30 @@
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
 
+typedef enum EditorKey {
+	KEY_UP = 1000,
+	KEY_DOWN,
+	KEY_LEFT,
+	KEY_RIGHT,
+	KEY_PAGE_UP,
+	KEY_PAGE_DOWN,
+} EditorKey;
+
 typedef struct Buffer {
 	char *data;
 	size_t len;
 } Buffer;
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpadded"
 typedef struct Editor {
+	struct termios term_orig;
 	uint cx, cy;
 	uint rows, cols;
-	struct termios term_orig;
+	char mode;
+	// 7 bytes of padding
 } Editor;
+#pragma clang diagnostic pop
 
 // ---------------------------------- Data ------------------------------------
 static Editor E;
@@ -55,28 +72,75 @@ static void enable_raw_mode(void) {
 
 	// Set terminal to raw mode.
 	struct termios term_raw = E.term_orig;
-	term_raw.c_iflag &= ~(unsigned)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-	term_raw.c_oflag &= ~(unsigned)(OPOST);
-	term_raw.c_cflag |= (unsigned)(CS8);
-	term_raw.c_lflag &= ~(unsigned)(ECHO | ICANON | ISIG | IEXTEN);
+	// clang-format off
+	term_raw.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+	term_raw.c_oflag &= ~(uint)(OPOST);
+	term_raw.c_cflag |=  (uint)(CS8);
+	term_raw.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
+	// clang-format on
 	term_raw.c_cc[VMIN] = 0;
 	term_raw.c_cc[VTIME] = 10 / FPS;
+
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) die("tcsetattr");
 }
 
-static char read_key(void) {
+static int read_key(void) {
 	char c;
-	ssize_t characters_read;
-	while ((characters_read = read(STDIN_FILENO, &c, 1) != 1))
-		if (characters_read == -1 && errno != EAGAIN) die("read");
-	return c;
+	if (read(STDIN_FILENO, &c, 1) != 1) goto error;
+	if (c != '\x1b') return c;
+
+	// Start reading multi-byte escape sequences
+	char seq[3];
+
+	if (read(STDIN_FILENO, &seq[0], 1) != 1) goto error;
+	if (read(STDIN_FILENO, &seq[1], 1) != 1) goto error;
+
+	// CSI: \x1b[...
+	// For now we only deal with '['
+	if (seq[0] != '[') goto error;
+
+	// Check the character following the CSI
+	switch (seq[1]) {
+
+	// CSI [A-Z]
+	case 'A': return KEY_UP;
+	case 'B': return KEY_DOWN;
+	case 'D': return KEY_LEFT;
+	case 'C': return KEY_RIGHT;
+
+	// CSI [0-9]~
+	case '0':
+	case '1':
+	case '2':
+	case '3':
+	case '4':
+	case '5':
+	case '6':
+	case '7':
+	case '8':
+	case '9': {
+		// Sequences like where a number follows the CSI end with a
+		// trailing '~', so we read one more character.
+		// e.g. 'CSI 5~'
+		if (read(STDIN_FILENO, &seq[2], 1) != 1 || seq[2] != '~')
+			goto error;
+
+		switch (seq[1]) {
+		case '5': return KEY_PAGE_UP;
+		case '6': return KEY_PAGE_DOWN;
+		}
+	}
+	}
+
+error:
+	return '\x1b';
 }
 
 static int get_cursor_position(uint *rows, uint *cols) {
-	// solicit device report
+	// Solicit device report
 	if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
 
-	// read device report
+	// Read device report
 	// \x1b[<rows>;<cols>R
 	char buf[32];
 	uint i = 0;
@@ -93,9 +157,9 @@ static int get_cursor_position(uint *rows, uint *cols) {
 }
 
 static int get_window_size(uint *rows, uint *cols) {
-	// reset cursor to home
+	// Reset cursor to home
 	if (write(STDOUT_FILENO, "\x1b[H", 3) != 3) return -1;
-	// move to end
+	// Move to end
 	if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
 	if (get_cursor_position(rows, cols) == -1) return -1;
 
@@ -104,18 +168,27 @@ static int get_window_size(uint *rows, uint *cols) {
 
 // ---------------------------------- Input -----------------------------------
 static void process_key(void) {
-	char c = read_key();
-	switch (c) {
-	case CTRL_KEY('q'):
-		write(STDOUT_FILENO, "\x1b[2J", 4);
-		write(STDOUT_FILENO, "\x1b[H", 3);
-		exit(EXIT_SUCCESS);
+	int c = read_key();
+	switch (E.mode) {
+	case 'n':
+		switch (c) {
+		case CTRL_KEY('q'):
+			write(STDOUT_FILENO, "\x1b[2J", 4);
+			write(STDOUT_FILENO, "\x1b[H", 3);
+			exit(EXIT_SUCCESS);
 
-	case 'j': E.cy < E.rows - 1 && E.cy++; break;
-	case 'k': E.cy > 0 && E.cy--; break;
-	case 'h': E.cx > 0 && E.cx--; break;
-	case 'l': E.cx < E.cols - 1 && E.cx++; break;
+		case 'k':
+		case KEY_UP: E.cy > 0 && E.cy--; break;
+		case 'j':
+		case KEY_DOWN: E.cy < E.rows - 1 && E.cy++; break;
+		case 'h':
+		case KEY_LEFT: E.cx > 0 && E.cx--; break;
+		case 'l':
+		case KEY_RIGHT: E.cx < E.cols - 1 && E.cx++; break;
 
+		default: break;
+		}
+		break;
 	default: break;
 	}
 }
@@ -178,9 +251,11 @@ static int place_cursor(Buffer *buffer, uint x, uint y) {
 static void refresh_screen(void) {
 	Buffer buffer = {0};
 	buffer_append(&buffer, "\x1b[?25l", 4); // hide cursor
+
 	place_cursor(&buffer, 0, 0);
 	draw_rows(&buffer);
 	place_cursor(&buffer, E.cx, E.cy);
+
 	buffer_append(&buffer, "\x1b[?25h", 4); // show cursor
 	write(STDOUT_FILENO, buffer.data, buffer.len);
 	buffer_free(&buffer);
@@ -189,6 +264,7 @@ static void refresh_screen(void) {
 // ---------------------------------- Main ------------------------------------
 static void init(void) {
 	enable_raw_mode();
+	E.mode = 'n';
 	E.cx = 0;
 	E.cy = 0;
 	if (get_window_size(&E.rows, &E.cols) == -1) die("get_window_size");
