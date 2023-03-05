@@ -196,6 +196,7 @@ static void cursor_move(int c) {
 
 static void process_key(void) {
 	int c = read_key();
+	uint half_screen = E.rows / 2;
 	switch (E.mode) {
 	case 'n':
 		switch (c) {
@@ -204,6 +205,7 @@ static void process_key(void) {
 			write(STDOUT_FILENO, "\x1b[H", 3);
 			exit(EXIT_SUCCESS);
 
+		// Scrolling
 		case CTRL_KEY('l'): E.coloff++; break;
 		case CTRL_KEY('h'):
 			if (E.coloff > 0) E.coloff--;
@@ -211,6 +213,14 @@ static void process_key(void) {
 		case CTRL_KEY('e'): E.rowoff++; break;
 		case CTRL_KEY('y'):
 			if (E.rowoff > 0) E.rowoff--;
+			break;
+
+		// Half-screen up and down
+		case CTRL_KEY('d'):
+			while (half_screen--) cursor_move('j');
+			break;
+		case CTRL_KEY('u'):
+			while (half_screen--) cursor_move('k');
 			break;
 
 		default: cursor_move(c);
@@ -266,15 +276,18 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 
 static int draw_status(ScreenBuffer *screen) {
 	char mode[32];
-	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ", E.mode == 'n' ? "NORMAL" : "UNKNOWN");
+	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
+				E.mode == 'n' ? "NORMAL" : "UNKNOWN");
 	if (mode_len == -1) return -1;
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 	screen_append(screen, mode, (uint)mode_len);
 
 	char cursor[12];
-	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy, E.cx);
+	int cursor_len =
+		snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy, E.cx);
 	if (cursor_len == -1) return -1;
-	cursor_len = cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
+	cursor_len =
+		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
 	int padding = (int)E.cols - cursor_len - mode_len;
 	while (padding-- > 0) {
