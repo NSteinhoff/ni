@@ -27,6 +27,7 @@ typedef struct Buffer {
 } Buffer;
 
 typedef struct Editor {
+	uint cx, cy;
 	uint rows, cols;
 	struct termios term_orig;
 } Editor;
@@ -71,21 +72,12 @@ static char read_key(void) {
 	return c;
 }
 
-static int move_cursor(uint drow, uint dcol) {
-	char buf[32];
-	int chars_printed =
-		snprintf(buf, sizeof buf, "\x1b[%dC\x1b[%dB", drow, dcol);
-	if (chars_printed == -1 || chars_printed >= (int)sizeof buf) return -1;
-	if (write(STDOUT_FILENO, buf, (size_t)chars_printed) != chars_printed)
-		return -1;
-
-	return 0;
-}
-
 static int get_cursor_position(uint *rows, uint *cols) {
-	// Solicit device report
+	// solicit device report
 	if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
 
+	// read device report
+	// \x1b[<rows>;<cols>R
 	char buf[32];
 	uint i = 0;
 	while (i < sizeof buf - 1) {
@@ -101,7 +93,10 @@ static int get_cursor_position(uint *rows, uint *cols) {
 }
 
 static int get_window_size(uint *rows, uint *cols) {
-	move_cursor(999, 999);
+	// reset cursor to home
+	if (write(STDOUT_FILENO, "\x1b[H", 3) != 3) return -1;
+	// move to end
+	if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
 	if (get_cursor_position(rows, cols) == -1) return -1;
 
 	return 0;
@@ -115,19 +110,27 @@ static void process_key(void) {
 		write(STDOUT_FILENO, "\x1b[2J", 4);
 		write(STDOUT_FILENO, "\x1b[H", 3);
 		exit(EXIT_SUCCESS);
+
+	case 'j': E.cy < E.rows - 1 && E.cy++; break;
+	case 'k': E.cy > 0 && E.cy--; break;
+	case 'h': E.cx > 0 && E.cx--; break;
+	case 'l': E.cx < E.cols - 1 && E.cx++; break;
+
 	default: break;
 	}
 }
 
 // --------------------------------- Output -----------------------------------
-static void buffer_append(Buffer *buffer, const char *s, size_t len) {
+static int buffer_append(Buffer *buffer, const char *s, size_t len) {
 	char *new = realloc(buffer->data,
 			    sizeof *buffer->data * (buffer->len + len));
-	if (new == NULL) return;
+	if (new == NULL) return -1;
 	buffer->data = new;
 
 	memcpy(&buffer->data[buffer->len], s, len);
 	buffer->len += len;
+
+	return 0;
 }
 
 static void buffer_free(Buffer *buffer) {
@@ -135,14 +138,14 @@ static void buffer_free(Buffer *buffer) {
 }
 
 static void draw_welcome_message(Buffer *buffer) {
-	char welcome[80];
-	int printed = snprintf(welcome, sizeof welcome,
-			       "Kilo editor -- version %s", KILO_VERSION);
-	if (printed == -1) {
+	char s[80];
+	int len_required = snprintf(s, sizeof s, "Kilo editor -- version %s",
+				    KILO_VERSION);
+	if (len_required == -1) {
 		perror("snprintf");
 		exit(EXIT_FAILURE);
 	}
-	uint len = (uint)printed > E.cols ? E.cols : (uint)printed;
+	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
 	uint padding = (E.cols - len) / 2;
 	if (padding) {
 		buffer_append(buffer, "~", 1);
@@ -151,7 +154,7 @@ static void draw_welcome_message(Buffer *buffer) {
 	while (padding--) {
 		buffer_append(buffer, " ", 1);
 	}
-	buffer_append(buffer, welcome, len);
+	buffer_append(buffer, s, len);
 }
 
 static void draw_rows(Buffer *buffer) {
@@ -163,11 +166,21 @@ static void draw_rows(Buffer *buffer) {
 	}
 }
 
+static int place_cursor(Buffer *buffer, uint x, uint y) {
+	char s[32];
+	int len_required = snprintf(s, sizeof s, "\x1b[%d;%dH", y + 1, x + 1);
+	if (len_required == -1 || len_required >= (int)sizeof s) return -1;
+	buffer_append(buffer, s, (uint)len_required);
+
+	return 0;
+}
+
 static void refresh_screen(void) {
 	Buffer buffer = {0};
 	buffer_append(&buffer, "\x1b[?25l", 4); // hide cursor
+	place_cursor(&buffer, 0, 0);
 	draw_rows(&buffer);
-	buffer_append(&buffer, "\x1b[H", 3);    // move cursor to home
+	place_cursor(&buffer, E.cx, E.cy);
 	buffer_append(&buffer, "\x1b[?25h", 4); // show cursor
 	write(STDOUT_FILENO, buffer.data, buffer.len);
 	buffer_free(&buffer);
@@ -176,6 +189,8 @@ static void refresh_screen(void) {
 // ---------------------------------- Main ------------------------------------
 static void init(void) {
 	enable_raw_mode();
+	E.cx = 0;
+	E.cy = 0;
 	if (get_window_size(&E.rows, &E.cols) == -1) die("get_window_size");
 }
 
