@@ -264,16 +264,24 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 	screen_append(screen, s, len);
 }
 
-static int draw_cursor_pos(ScreenBuffer *screen) {
-	char buf[12];
-	int printed = snprintf(buf, sizeof buf - 1, "[%d:%d]", E.cy, E.cx);
-	if (printed == -1) return -1;
-	uint len = printed < (int)sizeof buf ? (uint)printed : sizeof buf;
-	uint padding = E.cols - len;
-	while (padding--) {
+static int draw_status(ScreenBuffer *screen) {
+	char mode[32];
+	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ", E.mode == 'n' ? "NORMAL" : "UNKNOWN");
+	if (mode_len == -1) return -1;
+	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
+	screen_append(screen, mode, (uint)mode_len);
+
+	char cursor[12];
+	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy, E.cx);
+	if (cursor_len == -1) return -1;
+	cursor_len = cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
+
+	int padding = (int)E.cols - cursor_len - mode_len;
+	while (padding-- > 0) {
 		screen_append(screen, " ", 1);
 	}
-	screen_append(screen, buf, strlen(buf));
+
+	screen_append(screen, cursor, (uint)cursor_len);
 
 	return 0;
 }
@@ -283,7 +291,7 @@ static void draw_rows(ScreenBuffer *screen) {
 		uint idx = y + E.rowoff;
 
 		if (y == E.rows - 1) {
-			draw_cursor_pos(screen);
+			draw_status(screen);
 		} else if (idx >= E.numlines) {
 			if (E.numlines == 0 && y == E.rows / 3)
 				draw_welcome_message(screen);
