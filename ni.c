@@ -25,14 +25,20 @@
 typedef unsigned int uint;
 typedef struct termios Term;
 
+typedef enum EditorMode {
+	MODE_NORMAL,
+	MODE_INSERT,
+} EditorMode;
+
 typedef enum EditorKey {
-	KEY_UP = 1000,
+	KEY_UP = 1000,  // Start the enum so that it does not conflict with raw characters
 	KEY_DOWN,
 	KEY_LEFT,
 	KEY_RIGHT,
 	KEY_PAGE_UP,
 	KEY_PAGE_DOWN,
 	KEY_DELETE,
+	KEY_RETURN,
 	KEY_ESCAPE,
 	KEY_NOOP,
 } EditorKey;
@@ -54,10 +60,10 @@ typedef struct Editor {
 	uint cx, cy;
 	uint rowoff, coloff;
 	uint rows, cols;
-	char mode;
+	EditorMode mode;
 } Editor;
 
-// ---------------------------------- Data ------------------------------------
+// --------------------------------- State ------------------------------------
 static Editor E;
 
 // -------------------------------- Terminal ----------------------------------
@@ -95,6 +101,8 @@ static int read_key(void) {
 	if (read(STDIN_FILENO, &c, 1) != 1) goto error;
 	if (c != '\x1b') {
 		switch (c) {
+
+		case 13: return KEY_RETURN;
 
 		case 8:
 		case 127: return KEY_DELETE;
@@ -190,7 +198,8 @@ static void insert_line(size_t at) {
 	memmove(&E.lines[at + 1], &E.lines[at],
 		(sizeof *E.lines) * (E.numlines - at));
 
-	E.lines[at] = (Line){.len = 0, .chars = strdup("")};
+	E.lines[at].len = 0;
+	E.lines[at].chars = strdup("");
 
 	E.numlines++;
 }
@@ -209,6 +218,14 @@ static void delete_line(size_t at) {
 	E.numlines--;
 }
 
+static void split_line(size_t at, size_t split_at) {
+	if (at > E.numlines) at = E.numlines;
+	insert_line(at + 1);
+
+	free(E.lines[at + 1].chars);
+	E.lines[at + 1].chars = strdup(&E.lines[at].chars[split_at]);
+}
+
 static void line_insert_char(Line *line, size_t at, char c) {
 	if (at > line->len) at = line->len;
 	// line->len does not include the terminating '\0'
@@ -223,7 +240,8 @@ static void line_delete_char(Line *line, size_t at) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
-	memmove(&line->chars[at], &line->chars[at + 1], line->len - (at + 1) + 1);
+	memmove(&line->chars[at], &line->chars[at + 1],
+		line->len - (at + 1) + 1);
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) die("realloc");
@@ -251,163 +269,174 @@ static void cursor_move(int c) {
 	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
 }
 
+static void process_key_normal(const int c) {
+	switch (c) {
+	case 'q':
+	case CTRL_KEY('q'):
+		write(STDOUT_FILENO, "\x1b[2J", 4);
+		write(STDOUT_FILENO, "\x1b[H", 3);
+		exit(EXIT_SUCCESS);
+
+	// Enter INSERT mode
+	case 'i':
+	case 'a':
+	case 'A':
+	case 'I':
+		if (E.numlines == 0) {
+			E.cx = 0;
+			E.cy = 0;
+			insert_line(E.cy);
+		}
+		E.mode = MODE_INSERT;
+		switch (c) {
+		case 'a':
+			if (E.cx < E.lines[E.cy].len) E.cx++;
+			break;
+		case 'A':
+			while (E.cx < E.lines[E.cy].len) E.cx++;
+			break;
+		case 'I':
+			while (E.cx > 0) E.cx--;
+			break;
+		}
+		break;
+
+	// Scrolling
+	case CTRL_KEY('l'): E.coloff++; break;
+	case CTRL_KEY('h'):
+		if (E.coloff > 0) E.coloff--;
+		break;
+	case CTRL_KEY('e'): E.rowoff++; break;
+	case CTRL_KEY('y'):
+		if (E.rowoff > 0) E.rowoff--;
+		break;
+
+	// Half-screen up/down
+	case CTRL_KEY('d'): {
+		uint n = E.rows / 2;
+		while (n--) cursor_move('j');
+		break;
+	}
+	case CTRL_KEY('u'): {
+		uint n = E.rows / 2;
+		while (n--) cursor_move('k');
+		break;
+	}
+
+	// Start/End of line
+	case '0': E.cx = 0; break;
+	case '$':
+		if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
+		break;
+
+	// Word wise movement
+	case 'w':
+		if (E.cx >= E.lines[E.cy].len - 1) break;
+
+		// Consume current word
+		while (E.cx < E.lines[E.cy].len - 1 &&
+		       !isspace(E.lines[E.cy].chars[E.cx]))
+			E.cx++;
+		// Consume whitespaces
+		while (E.cx < E.lines[E.cy].len - 1 &&
+		       isspace(E.lines[E.cy].chars[E.cx]))
+			E.cx++;
+		break;
+	case 'e':
+		if (E.cx >= E.lines[E.cy].len - 1) break;
+
+		// Consume whitespace to the right
+		if (isspace(E.lines[E.cy].chars[E.cx + 1]))
+			while (E.cx < E.lines[E.cy].len - 1 &&
+			       isspace(E.lines[E.cy].chars[E.cx + 1]))
+				E.cx++;
+
+		// Consume word till the end
+		while (E.cx < E.lines[E.cy].len - 1 &&
+		       !isspace(E.lines[E.cy].chars[E.cx + 1]))
+			E.cx++;
+		break;
+	case 'b':
+		if (E.cx == 0) break;
+
+		// Consume whitespace to the left
+		if (isspace(E.lines[E.cy].chars[E.cx - 1]))
+			while (E.cx > 0 &&
+			       isspace(E.lines[E.cy].chars[E.cx - 1]))
+				E.cx--;
+
+		// Consume word till the beginning
+		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1]))
+			E.cx--;
+		break;
+
+	// File start and end
+	case 'g':
+	case 'G':
+		E.cy = c == 'g' ? 0 : E.numlines - 1;
+		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
+		break;
+
+	// Inserting lines
+	case 'O':
+		E.cx = 0;
+		insert_line(E.cy);
+		E.mode = MODE_INSERT;
+		break;
+	case 'o':
+		E.cx = 0;
+		insert_line(E.cy++ + 1);
+		E.mode = MODE_INSERT;
+		break;
+
+	case 'd':
+		E.cx = 0;
+		delete_line(E.cy);
+		if (E.cy >= E.numlines) E.cy = E.numlines - 1;
+		break;
+
+	// Delete single character
+	case 'x':
+		line_delete_char(&E.lines[E.cy], E.cx);
+		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
+		break;
+
+	default: cursor_move(c);
+	}
+}
+
+static void process_key_insert(const int c) {
+	switch (c) {
+	case CTRL_KEY('q'):
+	case KEY_ESCAPE:
+		E.mode = MODE_NORMAL;
+		while (E.cx >= E.lines[E.cy].len) E.cx--;
+		break;
+
+	case KEY_DELETE:
+		if (E.cx == 0) break;
+		line_delete_char(&E.lines[E.cy], --E.cx);
+		break;
+
+	case KEY_RETURN:
+		split_line(E.cy, E.cx);
+		E.cy++;
+		E.cx = 0;
+		break;
+
+	default:
+		if (!isalnum(c) && c != ' ') break;
+		line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
+		break;
+	}
+}
+
 static void process_key(void) {
 	int c = read_key();
-	uint half_screen = E.rows / 2;
 
 	switch (E.mode) {
-	case 'i':
-		switch (c) {
-		case KEY_ESCAPE:
-		case CTRL_KEY('q'):
-			E.mode = 'n';
-			while (E.cx >= E.lines[E.cy].len) E.cx--;
-			break;
-
-		case KEY_DELETE:
-			if (E.cx == 0) break;
-			line_delete_char(&E.lines[E.cy], --E.cx);
-			break;
-
-		default:
-			if (!isalnum(c) && c != ' ') break;
-			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
-			break;
-		}
-		break;
-	case 'n':
-		switch (c) {
-		case 'q':
-		case CTRL_KEY('q'):
-			write(STDOUT_FILENO, "\x1b[2J", 4);
-			write(STDOUT_FILENO, "\x1b[H", 3);
-			exit(EXIT_SUCCESS);
-
-		// Enter INSERT mode
-		case 'i':
-		case 'a':
-		case 'A':
-		case 'I':
-			if (E.numlines == 0) {
-				E.cx = 0;
-				E.cy = 0;
-				insert_line(E.cy);
-			}
-			E.mode = 'i';
-			switch (c) {
-			case 'a':
-				if (E.cx < E.lines[E.cy].len) E.cx++;
-				break;
-			case 'A':
-				while (E.cx < E.lines[E.cy].len) E.cx++;
-				break;
-			case 'I':
-				while (E.cx > 0) E.cx--;
-				break;
-			}
-			break;
-
-		// Scrolling
-		case CTRL_KEY('l'): E.coloff++; break;
-		case CTRL_KEY('h'):
-			if (E.coloff > 0) E.coloff--;
-			break;
-		case CTRL_KEY('e'): E.rowoff++; break;
-		case CTRL_KEY('y'):
-			if (E.rowoff > 0) E.rowoff--;
-			break;
-
-		// Half-screen up/down
-		case CTRL_KEY('d'):
-			while (half_screen--) cursor_move('j');
-			break;
-		case CTRL_KEY('u'):
-			while (half_screen--) cursor_move('k');
-			break;
-
-		// Start/End of line
-		case '0': E.cx = 0; break;
-		case '$':
-			if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
-			break;
-
-		// Word wise movement
-		case 'w':
-			if (E.cx >= E.lines[E.cy].len - 1) break;
-
-			// Consume current word
-			while (E.cx < E.lines[E.cy].len - 1 &&
-			       !isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx++;
-			// Consume whitespaces
-			while (E.cx < E.lines[E.cy].len - 1 &&
-			       isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx++;
-			break;
-		case 'e':
-			if (E.cx >= E.lines[E.cy].len - 1) break;
-
-			// Consume whitespace to the right
-			if (isspace(E.lines[E.cy].chars[E.cx + 1]))
-				while (E.cx < E.lines[E.cy].len - 1 &&
-				       isspace(E.lines[E.cy].chars[E.cx + 1]))
-					E.cx++;
-
-			// Consume word till the end
-			while (E.cx < E.lines[E.cy].len - 1 &&
-			       !isspace(E.lines[E.cy].chars[E.cx + 1]))
-				E.cx++;
-			break;
-		case 'b':
-			if (E.cx == 0) break;
-
-			// Consume whitespace to the left
-			if (isspace(E.lines[E.cy].chars[E.cx - 1]))
-				while (E.cx > 0 &&
-				       isspace(E.lines[E.cy].chars[E.cx - 1]))
-					E.cx--;
-
-			// Consume word till the beginning
-			while (E.cx > 0 &&
-			       !isspace(E.lines[E.cy].chars[E.cx - 1]))
-				E.cx--;
-			break;
-
-		// File start and end
-		case 'g':
-		case 'G':
-			E.cy = c == 'g' ? 0 : E.numlines - 1;
-			while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
-			break;
-
-		// Inserting lines
-		case 'O':
-			E.cx = 0;
-			insert_line(E.cy);
-			E.mode = 'i';
-			break;
-		case 'o':
-			E.cx = 0;
-			insert_line(E.cy++ + 1);
-			E.mode = 'i';
-			break;
-
-		case 'd':
-			E.cx = 0;
-			delete_line(E.cy);
-			if (E.cy >= E.numlines) E.cy = E.numlines - 1;
-			break;
-
-		// Delete single character
-		case 'x':
-			line_delete_char(&E.lines[E.cy], E.cx);
-			while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
-			break;
-
-		default: cursor_move(c);
-		}
-		break;
-	default: break;
+	case MODE_INSERT: process_key_insert(c); break;
+	case MODE_NORMAL: process_key_normal(c); break;
 	}
 }
 
@@ -482,7 +511,7 @@ static int draw_status(ScreenBuffer *screen) {
 	return 0;
 }
 
-static void draw_rows(ScreenBuffer *screen) {
+static void draw_lines(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
 		uint idx = y + E.rowoff;
 
@@ -523,7 +552,7 @@ static void refresh_screen(void) {
 	screen_append(&screen, "\x1b[?25l", 4); // hide cursor
 
 	place_cursor(&screen, 0, 0);
-	draw_rows(&screen);
+	draw_lines(&screen);
 	place_cursor(&screen, E.cx - E.coloff, E.cy - E.rowoff);
 
 	screen_append(&screen, "\x1b[?25h", 4); // show cursor
@@ -532,15 +561,19 @@ static void refresh_screen(void) {
 }
 
 // -------------------------------- File I/O ----------------------------------
-static void editor_append_line(const char *line, size_t len) {
-	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
-
-	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+static size_t line_length(const char *chars, size_t len) {
+	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
 		len--;
+	return len;
+}
 
-	E.lines[E.numlines].chars = strndup(line, len);
-	E.lines[E.numlines].len = len;
+static void editor_append_line(const char *chars, size_t len) {
+	size_t i = E.numlines;
 	E.numlines++;
+	E.lines = realloc(E.lines, (sizeof *E.lines) * E.numlines);
+	len = line_length(chars, len);
+	E.lines[i].chars = strndup(chars, len);
+	E.lines[i].len = len;
 }
 
 static void editor_open(const char *restrict fname) {
@@ -564,7 +597,7 @@ static void editor_open(const char *restrict fname) {
 
 // ---------------------------------- Main ------------------------------------
 static void editor_init(void) {
-	E.mode = 'n';
+	E.mode = MODE_NORMAL;
 	E.numlines = 0;
 	E.lines = NULL;
 	E.rowoff = 0;
