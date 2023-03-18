@@ -1,7 +1,7 @@
-/// KILO
+/// NI
 /// ====
 ///
-/// Kilo is a minimalist modal text editor written in plain C without using
+/// ni is a minimalist modal text editor written in plain C without using
 /// external libraries.
 
 // -------------------------------- Includes ----------------------------------
@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 // --------------------------------- Defines ----------------------------------
-#define KILO_VERSION "0.0.1"
+#define Ni_VERSION "0.0.1"
 #define NORETURN __attribute__((noreturn)) void
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
@@ -31,6 +31,9 @@ typedef enum EditorKey {
 	KEY_RIGHT,
 	KEY_PAGE_UP,
 	KEY_PAGE_DOWN,
+	KEY_DELETE,
+	KEY_ESCAPE,
+	KEY_NOOP,
 } EditorKey;
 
 typedef struct ScreenBuffer {
@@ -82,7 +85,7 @@ static void enable_raw_mode(void) {
 	term_raw.c_cflag |= (uint)(CS8);
 	term_raw.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
 	term_raw.c_cc[VMIN] = 0;
-	term_raw.c_cc[VTIME] = 10;
+	term_raw.c_cc[VTIME] = 1;
 
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) die("tcsetattr");
 }
@@ -90,13 +93,21 @@ static void enable_raw_mode(void) {
 static int read_key(void) {
 	char c;
 	if (read(STDIN_FILENO, &c, 1) != 1) goto error;
-	if (c != '\x1b') return c;
+	if (c != '\x1b') {
+		switch (c) {
+
+		case 8:
+		case 127: return KEY_DELETE;
+
+		default: return c;
+		}
+	}
 
 	// Start reading multi-byte escape sequences
 	char seq[3];
 
-	if (read(STDIN_FILENO, &seq[0], 1) != 1) goto error;
-	if (read(STDIN_FILENO, &seq[1], 1) != 1) goto error;
+	if (read(STDIN_FILENO, &seq[0], 1) != 1) return KEY_ESCAPE;
+	if (read(STDIN_FILENO, &seq[1], 1) != 1) return KEY_ESCAPE;
 
 	// CSI: \x1b[...
 	// For now we only deal with '['
@@ -129,6 +140,7 @@ static int read_key(void) {
 			goto error;
 
 		switch (seq[1]) {
+		case '3': return KEY_DELETE;
 		case '5': return KEY_PAGE_UP;
 		case '6': return KEY_PAGE_DOWN;
 		}
@@ -136,7 +148,7 @@ static int read_key(void) {
 	}
 
 error:
-	return '\x1b';
+	return KEY_NOOP;
 }
 
 static int get_cursor_position(uint *rows, uint *cols) {
@@ -169,6 +181,50 @@ static int get_window_size(uint *rows, uint *cols) {
 	return 0;
 }
 
+// --------------------------------- Editing ----------------------------------
+static void line_insert(size_t at) {
+	if (at > E.numlines) at = E.numlines;
+	if (E.numlines + 1 > E.linescap) {
+		E.linescap = E.linescap == 0 ? 2 : E.linescap * 2;
+		E.lines = realloc(E.lines, (sizeof *E.lines) * E.linescap);
+		if (!E.lines) die("realloc");
+	}
+
+	memmove(&E.lines[at + 1], &E.lines[at], E.numlines - at);
+	E.lines[at] = (Line){.len = 0, .chars = strdup("")};
+	E.numlines++;
+}
+
+static void line_delete(size_t at) {
+	if (E.numlines == 0) return;
+	(void)at;
+	if (at >= E.numlines) at = E.numlines - 1;
+	E.numlines--;
+	size_t bytes_to_move = (sizeof *E.lines) * E.numlines - at;
+	if (bytes_to_move > 0)
+		memmove(&E.lines[at], &E.lines[at + 1], bytes_to_move);
+}
+
+static void line_insert_char(Line *line, size_t at, char c) {
+	if (at > line->len) at = line->len;
+	// line->len does not include the terminating '\0'
+	line->chars = realloc(line->chars, line->len + 2);
+	if (!line->chars) die("realloc");
+	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
+	line->chars[at] = c;
+	line->len++;
+}
+
+static void line_delete_char(Line *line, size_t at) {
+	// line->len does not include the terminating '\0'
+	if (line->len == 0) return;
+	if (at >= line->len) at = line->len - 1;
+	memmove(&line->chars[at], &line->chars[at + 1], line->len - at);
+	line->len--;
+	line->chars = realloc(line->chars, line->len + 1);
+	if (!line->chars) die("realloc");
+}
+
 // ---------------------------------- Input -----------------------------------
 static void cursor_move(int c) {
 	switch (c) {
@@ -196,12 +252,50 @@ static void process_key(void) {
 	uint half_screen = E.rows / 2;
 
 	switch (E.mode) {
+	case 'i':
+		switch (c) {
+		case KEY_ESCAPE:
+		case CTRL_KEY('q'):
+			E.mode = 'n';
+			while (E.cx >= E.lines[E.cy].len) E.cx--;
+			break;
+
+		case KEY_DELETE:
+			if (E.cx == 0) break;
+			line_delete_char(&E.lines[E.cy], --E.cx);
+			break;
+
+		default:
+			if (!isalnum(c) && c != ' ') break;
+			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
+			break;
+		}
+		break;
 	case 'n':
 		switch (c) {
+		case 'q':
 		case CTRL_KEY('q'):
 			write(STDOUT_FILENO, "\x1b[2J", 4);
 			write(STDOUT_FILENO, "\x1b[H", 3);
 			exit(EXIT_SUCCESS);
+
+		// Enter INSERT mode
+		case 'i':
+		case 'a':
+		case 'A':
+		case 'I':
+			if (E.numlines == 0) {
+				E.cx = 0;
+				E.cy = 0;
+				line_insert(E.cy);
+			}
+			E.mode = 'i';
+			switch (c) {
+				case 'a': if (E.cx < E.lines[E.cy].len) E.cx++; break;
+				case 'A': while (E.cx < E.lines[E.cy].len) E.cx++; break;
+				case 'I': while (E.cx > 0) E.cx--; break;
+			}
+			break;
 
 		// Scrolling
 		case CTRL_KEY('l'): E.coloff++; break;
@@ -213,10 +307,13 @@ static void process_key(void) {
 			if (E.rowoff > 0) E.rowoff--;
 			break;
 
-		// TODO: Word wise movement
-		case 'w':
-		case 'e':
-		case 'b': break;
+		// Half-screen up/down
+		case CTRL_KEY('d'):
+			while (half_screen--) cursor_move('j');
+			break;
+		case CTRL_KEY('u'):
+			while (half_screen--) cursor_move('k');
+			break;
 
 		// Start/End of line
 		case '0': E.cx = 0; break;
@@ -224,12 +321,77 @@ static void process_key(void) {
 			if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
 			break;
 
-		// Half-screen up/down
-		case CTRL_KEY('d'):
-			while (half_screen--) cursor_move('j');
+		// Word wise movement
+		case 'w':
+			if (E.cx >= E.lines[E.cy].len - 1) break;
+
+			// Consume current word
+			while (E.cx < E.lines[E.cy].len - 1 &&
+			       !isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx++;
+			// Consume whitespaces
+			while (E.cx < E.lines[E.cy].len - 1 &&
+			       isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx++;
 			break;
-		case CTRL_KEY('u'):
-			while (half_screen--) cursor_move('k');
+		case 'e':
+			if (E.cx >= E.lines[E.cy].len - 1) break;
+
+			// Consume whitespace to the right
+			if (isspace(E.lines[E.cy].chars[E.cx + 1]))
+				while (E.cx < E.lines[E.cy].len - 1 &&
+				       isspace(E.lines[E.cy].chars[E.cx + 1]))
+					E.cx++;
+
+			// Consume word till the end
+			while (E.cx < E.lines[E.cy].len - 1 &&
+			       !isspace(E.lines[E.cy].chars[E.cx + 1]))
+				E.cx++;
+			break;
+		case 'b':
+			if (E.cx == 0) break;
+
+			// Consume whitespace to the left
+			if (isspace(E.lines[E.cy].chars[E.cx - 1]))
+				while (E.cx > 0 &&
+				       isspace(E.lines[E.cy].chars[E.cx - 1]))
+					E.cx--;
+
+			// Consume word till the beginning
+			while (E.cx > 0 &&
+			       !isspace(E.lines[E.cy].chars[E.cx - 1]))
+				E.cx--;
+			break;
+
+		// File start and end
+		case 'g':
+		case 'G':
+			E.cy = c == 'g' ? 0 : E.numlines - 1;
+			while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
+			break;
+
+		// Inserting lines
+		case 'O':
+			E.cx = 0;
+			line_insert(E.cy);
+			E.mode = 'i';
+			break;
+		case 'o':
+			E.cx = 0;
+			line_insert(E.cy++ + 1);
+			E.mode = 'i';
+			break;
+
+		case 'd':
+			E.cx = 0;
+			line_delete(E.cy);
+			if (E.cy >= E.numlines) E.cy = E.numlines - 1;
+			break;
+
+		// Delete single character
+		case 'x':
+			line_delete_char(&E.lines[E.cy], E.cx);
+			while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
 			break;
 
 		default: cursor_move(c);
@@ -266,8 +428,8 @@ static void screen_free(ScreenBuffer *screen) {
 
 static void draw_welcome_message(ScreenBuffer *screen) {
 	char s[80];
-	int len_required = snprintf(s, sizeof s, "Kilo editor -- version %s",
-				    KILO_VERSION);
+	int len_required =
+		snprintf(s, sizeof s, "ni editor -- version %s", Ni_VERSION);
 	if (len_required == -1) {
 		die("snprintf");
 	}
@@ -286,14 +448,16 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 static int draw_status(ScreenBuffer *screen) {
 	char mode[32];
 	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
-				E.mode == 'n' ? "NORMAL" : "UNKNOWN");
+				E.mode == 'n'   ? "NORMAL"
+				: E.mode == 'i' ? "INSERT"
+						: "UNKNOWN");
 	if (mode_len == -1) return -1;
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 	screen_append(screen, mode, (uint)mode_len);
 
 	char cursor[12];
-	int cursor_len =
-		snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy, E.cx);
+	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]",
+				  E.cy + 1, E.cx + 1);
 	if (cursor_len == -1) return -1;
 	cursor_len =
 		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
@@ -361,9 +525,8 @@ static void refresh_screen(void) {
 static void editor_append_line(const char *line, size_t len) {
 	if (E.numlines + 1 > E.linescap) {
 		E.linescap = E.linescap == 0 ? 2 : E.linescap * 2;
-		Line *lines = realloc(E.lines, (sizeof *lines) * E.linescap);
-		if (lines) E.lines = lines;
-		else die("realloc");
+		E.lines = realloc(E.lines, (sizeof *E.lines) * E.linescap);
+		if (!E.lines) die("realloc");
 	}
 
 	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
