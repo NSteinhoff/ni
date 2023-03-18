@@ -314,7 +314,10 @@ static void draw_rows(ScreenBuffer *screen) {
 
 		if (y == E.rows - 1) {
 			draw_status(screen);
-		} else if (idx >= E.numlines) {
+			return;
+		}
+
+		if (idx >= E.numlines) {
 			if (E.numlines == 0 && y == E.rows / 3)
 				draw_welcome_message(screen);
 			else screen_append(screen, "~", 1);
@@ -327,7 +330,7 @@ static void draw_rows(ScreenBuffer *screen) {
 		}
 
 		screen_append(screen, "\x1b[K", 3); // clear till EOL
-		if (y < E.rows - 1) screen_append(screen, "\r\n", 2);
+		screen_append(screen, "\r\n", 2);
 	}
 }
 
