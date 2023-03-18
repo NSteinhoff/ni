@@ -3,6 +3,7 @@
 ///
 /// ni is a minimalist modal text editor written in plain C without using
 /// external libraries.
+///
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>
@@ -50,7 +51,6 @@ typedef struct Editor {
 	Term term_orig;
 	Line *lines;
 	uint numlines;
-	uint linescap;
 	uint cx, cy;
 	uint rowoff, coloff;
 	uint rows, cols;
@@ -182,33 +182,37 @@ static int get_window_size(uint *rows, uint *cols) {
 }
 
 // --------------------------------- Editing ----------------------------------
-static void line_insert(size_t at) {
+static void insert_line(size_t at) {
 	if (at > E.numlines) at = E.numlines;
-	if (E.numlines + 1 > E.linescap) {
-		E.linescap = E.linescap == 0 ? 2 : E.linescap * 2;
-		E.lines = realloc(E.lines, (sizeof *E.lines) * E.linescap);
-		if (!E.lines) die("realloc");
-	}
+	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
+	if (!E.lines) die("realloc");
 
-	memmove(&E.lines[at + 1], &E.lines[at], E.numlines - at);
+	memmove(&E.lines[at + 1], &E.lines[at],
+		(sizeof *E.lines) * (E.numlines - at));
+
 	E.lines[at] = (Line){.len = 0, .chars = strdup("")};
+
 	E.numlines++;
 }
 
-static void line_delete(size_t at) {
+static void delete_line(size_t at) {
 	if (E.numlines == 0) return;
-	(void)at;
 	if (at >= E.numlines) at = E.numlines - 1;
+
+	free(E.lines[at].chars);
+	E.lines[at].chars = NULL;
+
+	if (at < E.numlines - 1)
+		memmove(&E.lines[at], &E.lines[at + 1],
+			(sizeof *E.lines) * (E.numlines - (at + 1)));
+
 	E.numlines--;
-	size_t bytes_to_move = (sizeof *E.lines) * E.numlines - at;
-	if (bytes_to_move > 0)
-		memmove(&E.lines[at], &E.lines[at + 1], bytes_to_move);
 }
 
 static void line_insert_char(Line *line, size_t at, char c) {
 	if (at > line->len) at = line->len;
 	// line->len does not include the terminating '\0'
-	line->chars = realloc(line->chars, line->len + 2);
+	line->chars = realloc(line->chars, line->len + 1 + 1);
 	if (!line->chars) die("realloc");
 	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
 	line->chars[at] = c;
@@ -219,7 +223,7 @@ static void line_delete_char(Line *line, size_t at) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
-	memmove(&line->chars[at], &line->chars[at + 1], line->len - at);
+	memmove(&line->chars[at], &line->chars[at + 1], line->len - (at + 1) + 1);
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) die("realloc");
@@ -287,13 +291,19 @@ static void process_key(void) {
 			if (E.numlines == 0) {
 				E.cx = 0;
 				E.cy = 0;
-				line_insert(E.cy);
+				insert_line(E.cy);
 			}
 			E.mode = 'i';
 			switch (c) {
-				case 'a': if (E.cx < E.lines[E.cy].len) E.cx++; break;
-				case 'A': while (E.cx < E.lines[E.cy].len) E.cx++; break;
-				case 'I': while (E.cx > 0) E.cx--; break;
+			case 'a':
+				if (E.cx < E.lines[E.cy].len) E.cx++;
+				break;
+			case 'A':
+				while (E.cx < E.lines[E.cy].len) E.cx++;
+				break;
+			case 'I':
+				while (E.cx > 0) E.cx--;
+				break;
 			}
 			break;
 
@@ -373,18 +383,18 @@ static void process_key(void) {
 		// Inserting lines
 		case 'O':
 			E.cx = 0;
-			line_insert(E.cy);
+			insert_line(E.cy);
 			E.mode = 'i';
 			break;
 		case 'o':
 			E.cx = 0;
-			line_insert(E.cy++ + 1);
+			insert_line(E.cy++ + 1);
 			E.mode = 'i';
 			break;
 
 		case 'd':
 			E.cx = 0;
-			line_delete(E.cy);
+			delete_line(E.cy);
 			if (E.cy >= E.numlines) E.cy = E.numlines - 1;
 			break;
 
@@ -523,11 +533,7 @@ static void refresh_screen(void) {
 
 // -------------------------------- File I/O ----------------------------------
 static void editor_append_line(const char *line, size_t len) {
-	if (E.numlines + 1 > E.linescap) {
-		E.linescap = E.linescap == 0 ? 2 : E.linescap * 2;
-		E.lines = realloc(E.lines, (sizeof *E.lines) * E.linescap);
-		if (!E.lines) die("realloc");
-	}
+	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 
 	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
 		len--;
@@ -542,7 +548,6 @@ static void editor_open(const char *restrict fname) {
 	if (!f) die("fopen");
 
 	E.numlines = 0;
-	E.linescap = 0;
 	if (E.lines) free(E.lines);
 	E.lines = NULL;
 
@@ -561,7 +566,6 @@ static void editor_open(const char *restrict fname) {
 static void editor_init(void) {
 	E.mode = 'n';
 	E.numlines = 0;
-	E.linescap = 0;
 	E.lines = NULL;
 	E.rowoff = 0;
 	E.coloff = 0;
