@@ -28,10 +28,12 @@ typedef struct termios Term;
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
+	MODE_COUNT,
 } EditorMode;
 
 typedef enum EditorKey {
-	KEY_UP = 1000,  // Start the enum so that it does not conflict with raw characters
+	KEY_UP = 1000, // Start the enum so that it does not conflict with raw
+		       // characters
 	KEY_DOWN,
 	KEY_LEFT,
 	KEY_RIGHT,
@@ -63,8 +65,22 @@ typedef struct Editor {
 	EditorMode mode;
 } Editor;
 
+typedef struct Mode {
+	char *status;
+	void (*process_key)(int c);
+} Mode;
+
 // --------------------------------- State ------------------------------------
 static Editor E;
+
+// ---------------------------------- Modes -----------------------------------
+static void process_key_normal(const int c);
+static void process_key_insert(const int c);
+
+static Mode modes[MODE_COUNT] = {
+	[MODE_NORMAL] = {"NORMAL", process_key_normal},
+	[MODE_INSERT] = {"INSERT", process_key_insert},
+};
 
 // -------------------------------- Terminal ----------------------------------
 static NORETURN die(const char s[]) {
@@ -72,6 +88,12 @@ static NORETURN die(const char s[]) {
 	write(STDOUT_FILENO, "\x1b[H", 3);
 	perror(s);
 	exit(EXIT_FAILURE);
+}
+
+static NORETURN quit(void) {
+	write(STDOUT_FILENO, "\x1b[2J", 4);
+	write(STDOUT_FILENO, "\x1b[H", 3);
+	exit(EXIT_SUCCESS);
 }
 
 static void reset_term(void) {
@@ -191,12 +213,13 @@ static int get_window_size(uint *rows, uint *cols) {
 
 // --------------------------------- Editing ----------------------------------
 static void insert_line(size_t at) {
-	if (at > E.numlines) at = E.numlines;
+	if (at >= E.numlines) at = E.numlines - 1;
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 	if (!E.lines) die("realloc");
 
-	memmove(&E.lines[at + 1], &E.lines[at],
-		(sizeof *E.lines) * (E.numlines - at));
+	if (at < E.numlines - 1)
+		memmove(&E.lines[at + 1], &E.lines[at],
+			(sizeof *E.lines) * (E.numlines - at));
 
 	E.lines[at].len = 0;
 	E.lines[at].chars = strdup("");
@@ -219,11 +242,24 @@ static void delete_line(size_t at) {
 }
 
 static void split_line(size_t at, size_t split_at) {
-	if (at > E.numlines) at = E.numlines;
+	if (at >= E.numlines) return;
+
 	insert_line(at + 1);
+	if (split_at >= E.lines[at].len) return;
 
 	free(E.lines[at + 1].chars);
-	E.lines[at + 1].chars = strdup(&E.lines[at].chars[split_at]);
+	size_t len = E.lines[at].len - split_at;
+	E.lines[at + 1].chars = strndup(&E.lines[at].chars[split_at], len);
+	E.lines[at + 1].len = len;
+
+	// Shorten original line by len
+	E.lines[at].len -= len;
+	E.lines[at].chars[E.lines[at].len] = '\0';
+	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len + 1);
+}
+
+static void join_lines(size_t at) {
+	(void)at;
 }
 
 static void line_insert_char(Line *line, size_t at, char c) {
@@ -272,22 +308,19 @@ static void cursor_move(int c) {
 static void process_key_normal(const int c) {
 	switch (c) {
 	case 'q':
-	case CTRL_KEY('q'):
-		write(STDOUT_FILENO, "\x1b[2J", 4);
-		write(STDOUT_FILENO, "\x1b[H", 3);
-		exit(EXIT_SUCCESS);
+	case CTRL_KEY('q'): quit();
 
 	// Enter INSERT mode
 	case 'i':
 	case 'a':
 	case 'A':
 	case 'I':
+		E.mode = MODE_INSERT;
 		if (E.numlines == 0) {
 			E.cx = 0;
 			E.cy = 0;
 			insert_line(E.cy);
 		}
-		E.mode = MODE_INSERT;
 		switch (c) {
 		case 'a':
 			if (E.cx < E.lines[E.cy].len) E.cx++;
@@ -311,17 +344,13 @@ static void process_key_normal(const int c) {
 		if (E.rowoff > 0) E.rowoff--;
 		break;
 
-	// Half-screen up/down
-	case CTRL_KEY('d'): {
-		uint n = E.rows / 2;
-		while (n--) cursor_move('j');
+	// Jump half-screen up/down
+	case CTRL_KEY('d'):
+		for (uint n = E.rows / 2; n > 0; n--) cursor_move('j');
 		break;
-	}
-	case CTRL_KEY('u'): {
-		uint n = E.rows / 2;
-		while (n--) cursor_move('k');
+	case CTRL_KEY('u'):
+		for (uint n = E.rows / 2; n > 0; n--) cursor_move('k');
 		break;
-	}
 
 	// Start/End of line
 	case '0': E.cx = 0; break;
@@ -389,6 +418,12 @@ static void process_key_normal(const int c) {
 		E.mode = MODE_INSERT;
 		break;
 
+	// Join lines
+	case 'J':
+		join_lines(E.cy);
+		break;
+
+	// Deleting lines
 	case 'd':
 		E.cx = 0;
 		delete_line(E.cy);
@@ -410,7 +445,7 @@ static void process_key_insert(const int c) {
 	case CTRL_KEY('q'):
 	case KEY_ESCAPE:
 		E.mode = MODE_NORMAL;
-		while (E.cx >= E.lines[E.cy].len) E.cx--;
+		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
 		break;
 
 	case KEY_DELETE:
@@ -428,15 +463,6 @@ static void process_key_insert(const int c) {
 		if (!isalnum(c) && c != ' ') break;
 		line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
 		break;
-	}
-}
-
-static void process_key(void) {
-	int c = read_key();
-
-	switch (E.mode) {
-	case MODE_INSERT: process_key_insert(c); break;
-	case MODE_NORMAL: process_key_normal(c); break;
 	}
 }
 
@@ -487,9 +513,7 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 static int draw_status(ScreenBuffer *screen) {
 	char mode[32];
 	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
-				E.mode == 'n'   ? "NORMAL"
-				: E.mode == 'i' ? "INSERT"
-						: "UNKNOWN");
+				modes[E.mode].status);
 	if (mode_len == -1) return -1;
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 	screen_append(screen, mode, (uint)mode_len);
@@ -610,12 +634,10 @@ static void editor_init(void) {
 int main(int argc, char *argv[]) {
 	enable_raw_mode();
 	editor_init();
-	if (argc >= 2) {
-		editor_open(argv[1]);
-	}
+	if (argc >= 2) editor_open(argv[1]);
 
 	while (true) {
 		refresh_screen();
-		process_key();
+		modes[E.mode].process_key(read_key());
 	}
 }
