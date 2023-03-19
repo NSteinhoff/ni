@@ -216,7 +216,7 @@ static int get_window_size(uint *rows, uint *cols) {
 
 // --------------------------------- Editing ----------------------------------
 static void insert_line(size_t at) {
-	if (at >= E.numlines) at = E.numlines - 1;
+	if (at > E.numlines) at = E.numlines;
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 	if (!E.lines) die("realloc");
 
