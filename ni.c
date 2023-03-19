@@ -245,6 +245,7 @@ static void delete_line(size_t at) {
 }
 
 static void split_line(size_t at, size_t split_at) {
+	if (E.numlines == 0) return;
 	if (at >= E.numlines) return;
 
 	insert_line(at + 1);
@@ -262,7 +263,27 @@ static void split_line(size_t at, size_t split_at) {
 }
 
 static void join_lines(size_t at) {
-	(void)at;
+	if (E.numlines <= 1) return;
+	if (at >= E.numlines) at = E.numlines - 1;
+
+	const Line * const src = &E.lines[at + 1];
+	Line * const target = &E.lines[at];
+
+	if (src->len > 0) {
+		size_t add_len = E.lines[at + 1].len;
+		const bool add_space = src->chars[0] != ' ';
+		if (add_space) add_len++;
+
+		target->chars = realloc(target->chars, target->len + add_len + 1);
+		if (!target->chars) die("realloc");
+
+		if (add_space) target->chars[target->len] = ' ';
+		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars, E.lines[at + 1].len);
+		target->len += add_len;
+		target->chars[target->len] = '\0';
+	}
+
+	delete_line(at + 1);
 }
 
 static void line_insert_char(Line *line, size_t at, char c) {
