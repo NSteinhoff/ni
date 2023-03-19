@@ -4,6 +4,13 @@
 /// ni is a minimalist modal text editor written in plain C without using
 /// external libraries.
 ///
+/// TODO:
+/// - saving
+/// - searching
+/// - incremental search
+/// - command line
+/// - setting options
+/// - syntax highlighting
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>
@@ -60,6 +67,7 @@ typedef struct Line {
 
 typedef struct Editor {
 	Term term_orig;
+	char *filename;
 	Line *lines;
 	uint numlines;
 	uint cx, cy;
@@ -266,19 +274,21 @@ static void join_lines(size_t at) {
 	if (E.numlines <= 1) return;
 	if (at >= E.numlines) at = E.numlines - 1;
 
-	const Line * const src = &E.lines[at + 1];
-	Line * const target = &E.lines[at];
+	const Line *const src = &E.lines[at + 1];
+	Line *const target = &E.lines[at];
 
 	if (src->len > 0) {
 		size_t add_len = E.lines[at + 1].len;
 		const bool add_space = src->chars[0] != ' ';
 		if (add_space) add_len++;
 
-		target->chars = realloc(target->chars, target->len + add_len + 1);
+		target->chars =
+			realloc(target->chars, target->len + add_len + 1);
 		if (!target->chars) die("realloc");
 
 		if (add_space) target->chars[target->len] = ' ';
-		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars, E.lines[at + 1].len);
+		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars,
+			E.lines[at + 1].len);
 		target->len += add_len;
 		target->chars[target->len] = '\0';
 	}
@@ -356,12 +366,8 @@ static void process_key_normal(const int c) {
 		case 'a':
 			if (L.len > 0) E.cx++;
 			break;
-		case 'A':
-			E.cx = (uint)L.len;
-			break;
-		case 'I':
-			E.cx = 0;
-			break;
+		case 'A': E.cx = (uint)L.len; break;
+		case 'I': E.cx = 0; break;
 		}
 		break;
 
@@ -432,9 +438,7 @@ static void process_key_normal(const int c) {
 
 	// File start and end
 	case 'g':
-	case 'G':
-		E.cy = c == 'g' ? 0 : E.numlines - 1;
-		break;
+	case 'G': E.cy = c == 'g' ? 0 : E.numlines - 1; break;
 
 	// Inserting lines
 	case 'O':
@@ -449,19 +453,13 @@ static void process_key_normal(const int c) {
 		break;
 
 	// Join lines
-	case 'J':
-		join_lines(E.cy);
-		break;
+	case 'J': join_lines(E.cy); break;
 
 	// Deleting lines
-	case 'd':
-		delete_line(E.cy);
-		break;
+	case 'd': delete_line(E.cy); break;
 
 	// Delete single character
-	case 'x':
-		line_delete_char(&E.lines[E.cy], E.cx);
-		break;
+	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
 
 	default: cursor_move(c);
 	}
@@ -487,8 +485,8 @@ static void process_key_insert(const int c) {
 		break;
 
 	default:
-		if (!isalnum(c) && c != ' ') break;
-		line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
+		if (isprint(c))
+			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
 		break;
 	}
 }
@@ -543,12 +541,13 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 }
 
 static int draw_status(ScreenBuffer *screen) {
+	const int max_len = (int)E.cols;
+
 	char mode[32];
 	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
 				modes[E.mode].status);
 	if (mode_len == -1) return -1;
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
-	screen_append(screen, mode, (uint)mode_len);
 
 	char cursor[12];
 	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]",
@@ -557,12 +556,45 @@ static int draw_status(ScreenBuffer *screen) {
 	cursor_len =
 		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
-	int padding = (int)E.cols - cursor_len - mode_len;
-	while (padding-- > 0) {
-		screen_append(screen, " ", 1);
+	char filename[32];
+	int filename_len =
+		snprintf(filename, sizeof filename - 1, " <%s>", E.filename);
+	if (filename_len == -1) return -1;
+	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
+
+	const int total_len = mode_len + filename_len + cursor_len;
+	if (max_len < total_len) {
+		char msg[] = "!!! ERROR: Status too long !!!";
+		screen_append(screen, msg, sizeof msg);
+		return -1;
 	}
 
-	screen_append(screen, cursor, (uint)cursor_len);
+	// clang-format off
+	struct { char *s;  int len; } parts[] = {
+		{mode,     mode_len},
+		{filename, filename_len},
+		{cursor,   cursor_len}
+	};
+	// clang-format on
+
+	const int n_parts = sizeof parts / sizeof parts[0];
+	const int padding = (max_len - total_len) / (n_parts - 1);
+	int remaining = max_len;
+
+	for (int i = 0; i < n_parts; i++) {
+		const char *part = parts[i].s;
+		const uint len = (uint)parts[i].len;
+
+		remaining -= len;
+		if (i > 0) {
+			int pad = padding;
+			remaining -= pad;
+			if (i == n_parts - 1)
+				while (remaining-- > 0) pad++;
+			while (pad-- > 0) screen_append(screen, " ", 1);
+		}
+		screen_append(screen, part, len);
+	}
 
 	return 0;
 }
@@ -649,6 +681,7 @@ static void editor_open(const char *restrict fname) {
 
 	if (line) free(line);
 	fclose(f);
+	E.filename = strdup(fname);
 }
 
 // ---------------------------------- Main ------------------------------------
