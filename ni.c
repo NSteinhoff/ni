@@ -21,6 +21,9 @@
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
+#define L (E.lines[E.cy])
+#define N (E.numlines)
+
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
 typedef struct termios Term;
@@ -305,6 +308,17 @@ static void cursor_move(int c) {
 	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
 }
 
+static void cursor_normalize(void) {
+	if (N == 0) {
+		E.cy = 0;
+		E.cx = 0;
+	}
+	while (E.cy > N - 1) E.cy--;
+
+	if (L.len == 0) E.cx = 0;
+	while (E.cx > L.len - 1) E.cx--;
+}
+
 static void process_key_normal(const int c) {
 	switch (c) {
 	case 'q':
@@ -316,20 +330,16 @@ static void process_key_normal(const int c) {
 	case 'A':
 	case 'I':
 		E.mode = MODE_INSERT;
-		if (E.numlines == 0) {
-			E.cx = 0;
-			E.cy = 0;
-			insert_line(E.cy);
-		}
+		if (N == 0) insert_line(0);
 		switch (c) {
 		case 'a':
-			if (E.cx < E.lines[E.cy].len) E.cx++;
+			if (L.len > 0) E.cx++;
 			break;
 		case 'A':
-			while (E.cx < E.lines[E.cy].len) E.cx++;
+			E.cx = (uint)L.len;
 			break;
 		case 'I':
-			while (E.cx > 0) E.cx--;
+			E.cx = 0;
 			break;
 		}
 		break;
@@ -355,7 +365,7 @@ static void process_key_normal(const int c) {
 	// Start/End of line
 	case '0': E.cx = 0; break;
 	case '$':
-		if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
+		if (E.numlines) E.cx = (uint)L.len - 1;
 		break;
 
 	// Word wise movement
@@ -403,7 +413,6 @@ static void process_key_normal(const int c) {
 	case 'g':
 	case 'G':
 		E.cy = c == 'g' ? 0 : E.numlines - 1;
-		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
 		break;
 
 	// Inserting lines
@@ -425,15 +434,12 @@ static void process_key_normal(const int c) {
 
 	// Deleting lines
 	case 'd':
-		E.cx = 0;
 		delete_line(E.cy);
-		if (E.cy >= E.numlines) E.cy = E.numlines - 1;
 		break;
 
 	// Delete single character
 	case 'x':
 		line_delete_char(&E.lines[E.cy], E.cx);
-		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
 		break;
 
 	default: cursor_move(c);
@@ -445,7 +451,7 @@ static void process_key_insert(const int c) {
 	case CTRL_KEY('q'):
 	case KEY_ESCAPE:
 		E.mode = MODE_NORMAL;
-		while (E.cx > 0 && E.cx >= E.lines[E.cy].len) E.cx--;
+		cursor_normalize();
 		break;
 
 	case KEY_DELETE:
@@ -464,6 +470,11 @@ static void process_key_insert(const int c) {
 		line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
 		break;
 	}
+}
+
+static void process_key(void) {
+	modes[E.mode].process_key(read_key());
+	if (E.mode == MODE_NORMAL) cursor_normalize();
 }
 
 static void editor_scroll(void) {
@@ -638,6 +649,6 @@ int main(int argc, char *argv[]) {
 
 	while (true) {
 		refresh_screen();
-		modes[E.mode].process_key(read_key());
+		process_key();
 	}
 }
