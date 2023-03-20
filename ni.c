@@ -39,9 +39,6 @@ static const char rendertab[] = {'>', '-'};
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
-#define L (E.lines[E.cy])
-#define N (E.numlines)
-
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
 typedef struct termios Term;
@@ -346,14 +343,15 @@ static void cursor_move(int c) {
 }
 
 static void cursor_normalize(void) {
-	if (N == 0) {
+	if (E.numlines == 0) {
 		E.cy = 0;
 		E.cx = 0;
+		return;
 	}
-	while (E.cy > N - 1) E.cy--;
 
-	if (L.len == 0) E.cx = 0;
-	while (E.cx > L.len - 1) E.cx--;
+	if (E.cy >= E.numlines) E.cy = E.numlines - 1;
+	if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+	if (E.lines[E.cy].len == 0) E.cx = 0;
 }
 
 static void process_key_normal(const int c) {
@@ -367,12 +365,12 @@ static void process_key_normal(const int c) {
 	case 'A':
 	case 'I':
 		E.mode = MODE_INSERT;
-		if (N == 0) insert_line(0);
+		if (!E.numlines) insert_line(0);
 		switch (c) {
 		case 'a':
-			if (L.len > 0) E.cx++;
+			if (E.lines[E.cy].len > 0) E.cx++;
 			break;
-		case 'A': E.cx = (uint)L.len; break;
+		case 'A': E.cx = (uint)E.lines[E.cy].len; break;
 		case 'I': E.cx = 0; break;
 		}
 		break;
@@ -398,7 +396,7 @@ static void process_key_normal(const int c) {
 	// Start/End of line
 	case '0': E.cx = 0; break;
 	case '$':
-		if (E.numlines) E.cx = (uint)L.len - 1;
+		if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
 		break;
 
 	// Word wise movement
@@ -571,8 +569,8 @@ static int draw_status(ScreenBuffer *screen) {
 		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
 	char filename[32];
-	int filename_len =
-		snprintf(filename, sizeof filename - 1, " <%s>", E.filename);
+	int filename_len = snprintf(filename, sizeof filename - 1, " <%s>",
+				    E.filename == NULL ? "NOFILE" : E.filename);
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
 
@@ -723,6 +721,7 @@ static void editor_open(const char *restrict fname) {
 
 	if (line) free(line);
 	fclose(f);
+	if (E.filename) free(E.filename);
 	E.filename = strdup(fname);
 }
 
@@ -730,6 +729,7 @@ static void editor_open(const char *restrict fname) {
 static void editor_init(void) {
 	E.mode = MODE_NORMAL;
 	E.lines = NULL;
+	E.filename = NULL;
 	E.numlines = 0;
 	E.rowoff = E.coloff = 0;
 	E.cx = E.cy = E.rx = 0;
