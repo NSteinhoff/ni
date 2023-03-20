@@ -34,6 +34,8 @@
 // --------------------------------- Defines ----------------------------------
 #define Ni_VERSION "0.0.1"
 #define NORETURN __attribute__((noreturn)) void
+#define NI_TABSTOP 8
+static const char rendertab[] = {'>', '-'};
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
@@ -51,8 +53,7 @@ typedef enum EditorMode {
 } EditorMode;
 
 typedef enum EditorKey {
-	KEY_UP = 1000, // Start the enum so that it does not conflict with raw
-		       // characters
+	KEY_UP = 1000,
 	KEY_DOWN,
 	KEY_LEFT,
 	KEY_RIGHT,
@@ -70,8 +71,8 @@ typedef struct ScreenBuffer {
 } ScreenBuffer;
 
 typedef struct Line {
-	size_t len;
-	char *chars;
+	size_t len, rlen;
+	char *chars, *render;
 } Line;
 
 typedef struct Editor {
@@ -223,7 +224,6 @@ static int get_window_size(uint *rows, uint *cols) {
 
 	return 0;
 }
-
 // --------------------------------- Editing ----------------------------------
 static void insert_line(size_t at) {
 	if (at > E.numlines) at = E.numlines;
@@ -236,6 +236,8 @@ static void insert_line(size_t at) {
 
 	E.lines[at].len = 0;
 	E.lines[at].chars = strdup("");
+	E.lines[at].rlen = 0;
+	E.lines[at].render = NULL;
 
 	E.numlines++;
 }
@@ -245,6 +247,7 @@ static void delete_line(size_t at) {
 	if (at >= E.numlines) at = E.numlines - 1;
 
 	free(E.lines[at].chars);
+	if (E.lines[at].render) free(E.lines[at].render);
 	E.lines[at].chars = NULL;
 
 	if (at < E.numlines - 1)
@@ -262,6 +265,7 @@ static void split_line(size_t at, size_t split_at) {
 	if (split_at >= E.lines[at].len) return;
 
 	free(E.lines[at + 1].chars);
+	if (E.lines[at + 1].render) free(E.lines[at + 1].render);
 	size_t len = E.lines[at].len - split_at;
 	E.lines[at + 1].chars = strndup(&E.lines[at].chars[split_at], len);
 	E.lines[at + 1].len = len;
@@ -337,7 +341,7 @@ static void cursor_move(int c) {
 	default: return;
 	}
 
-	if (E.lines[E.cy].len == 0) E.cx = 0;
+	if (E.numlines == 0 || E.lines[E.cy].len == 0) E.cx = 0;
 	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
 }
 
@@ -487,7 +491,7 @@ static void process_key_insert(const int c) {
 		break;
 
 	default:
-		if (isprint(c))
+		if (isprint(c) || isblank(c))
 			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
 		break;
 	}
@@ -498,12 +502,24 @@ static void process_key(void) {
 	if (E.mode == MODE_NORMAL) cursor_normalize();
 }
 
+static uint cx2rx(uint cx, Line *line) {
+	const char *chars = line->chars;
+	uint rx = 0;
+	if (!line->len) return cx;
+	for (size_t i = 0; i < cx; i++) {
+		if (chars[i] == '\t') rx += NI_TABSTOP - (rx % NI_TABSTOP);
+		else rx++;
+	}
+	return rx;
+}
+
 static void editor_scroll(void) {
+	E.rx = E.cy < E.numlines ? cx2rx(E.cx, &E.lines[E.cy]) : E.cx;
 	if (E.cy < E.rowoff) E.rowoff = E.cy;
 	if ((E.cy + 1) > E.rowoff + (E.rows - 1))
 		E.rowoff = (E.cy + 1) - (E.rows - 1);
-	if (E.cx < E.coloff) E.coloff = E.cx;
-	if ((E.cx + 1) > E.coloff + E.cols) E.coloff = (E.cx + 1) - E.cols;
+	if (E.rx < E.coloff) E.coloff = E.rx;
+	if ((E.rx + 1) > E.coloff + E.cols) E.coloff = (E.rx + 1) - E.cols;
 }
 
 // --------------------------------- Output -----------------------------------
@@ -527,18 +543,14 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 	char s[80];
 	int len_required =
 		snprintf(s, sizeof s, "ni editor -- version %s", Ni_VERSION);
-	if (len_required == -1) {
-		DIE("snprintf");
-	}
+	if (len_required == -1) DIE("snprintf");
 	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
 	uint padding = (E.cols - len) / 2;
 	if (padding) {
 		screen_append(screen, "~", 1);
 		padding--;
 	}
-	while (padding--) {
-		screen_append(screen, " ", 1);
-	}
+	while (padding--) screen_append(screen, " ", 1);
 	screen_append(screen, s, len);
 }
 
@@ -601,6 +613,27 @@ static int draw_status(ScreenBuffer *screen) {
 	return 0;
 }
 
+static void render(Line *line) {
+	const char *chars = line->chars;
+	const size_t len = line->len;
+
+	uint ntabs = 0;
+	for (uint i = 0; i < len; i++)
+		if (chars[i] == '\t') ntabs++;
+
+	size_t rlen = 0;
+	char *render = realloc(line->render, len + 1 + ntabs * NI_TABSTOP);
+	for (uint i = 0; i < len; i++)
+		if (chars[i] == '\t') {
+			render[rlen++] = rendertab[0];
+			while (rlen % NI_TABSTOP) render[rlen++] = rendertab[1];
+		} else render[rlen++] = chars[i];
+	render[rlen] = '\0';
+
+	line->render = render;
+	line->rlen = rlen;
+}
+
 static void draw_lines(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
 		uint idx = y + E.rowoff;
@@ -615,11 +648,16 @@ static void draw_lines(ScreenBuffer *screen) {
 				draw_welcome_message(screen);
 			else screen_append(screen, "~", 1);
 		} else if (E.coloff < E.lines[idx].len) {
-			uint len = E.lines[idx].len - E.coloff <= E.cols
-					 ? (uint)(E.lines[idx].len - E.coloff)
+			Line *line = &E.lines[idx];
+
+			render(line);
+			char *rchars = line->render;
+			size_t rlen = line->rlen;
+
+			uint len = rlen - E.coloff <= E.cols
+					 ? (uint)(rlen - E.coloff)
 					 : E.cols;
-			screen_append(screen, E.lines[idx].chars + E.coloff,
-				      len);
+			screen_append(screen, rchars + E.coloff, len);
 		}
 
 		screen_append(screen, "\x1b[K", 3); // clear till EOL
@@ -643,7 +681,7 @@ static void refresh_screen(void) {
 
 	place_cursor(&screen, 0, 0);
 	draw_lines(&screen);
-	place_cursor(&screen, E.cx - E.coloff, E.cy - E.rowoff);
+	place_cursor(&screen, E.rx - E.coloff, E.cy - E.rowoff);
 
 	screen_append(&screen, "\x1b[?25h", 4); // show cursor
 	write(STDOUT_FILENO, screen.data, screen.len);
@@ -664,6 +702,8 @@ static void editor_append_line(const char *chars, size_t len) {
 	len = line_length(chars, len);
 	E.lines[i].chars = strndup(chars, len);
 	E.lines[i].len = len;
+	E.lines[i].render = NULL;
+	E.lines[i].rlen = 0;
 }
 
 static void editor_open(const char *restrict fname) {
