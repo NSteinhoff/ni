@@ -11,6 +11,15 @@
 /// - command line
 /// - setting options
 /// - syntax highlighting
+#define STR(A) #A
+#define PERR(F, L, S) perror(F ":" STR(L) " " S)
+#define DIE(S)                                                                 \
+	do {                                                                   \
+		write(STDOUT_FILENO, "\x1b[2J", 4);                            \
+		write(STDOUT_FILENO, "\x1b[H", 3);                             \
+		PERR(__FILE__, __LINE__, S);                                   \
+		exit(EXIT_FAILURE);                                            \
+	} while (0)
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>
@@ -70,7 +79,7 @@ typedef struct Editor {
 	char *filename;
 	Line *lines;
 	uint numlines;
-	uint cx, cy;
+	uint cx, cy, rx;
 	uint rowoff, coloff;
 	uint rows, cols;
 	EditorMode mode;
@@ -94,13 +103,6 @@ static Mode modes[MODE_COUNT] = {
 };
 
 // -------------------------------- Terminal ----------------------------------
-static NORETURN die(const char s[]) {
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
-	perror(s);
-	exit(EXIT_FAILURE);
-}
-
 static NORETURN quit(void) {
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
@@ -109,12 +111,12 @@ static NORETURN quit(void) {
 
 static void reset_term(void) {
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1)
-		die("tcsetattr");
+		DIE("tcsetattr");
 }
 
 static void enable_raw_mode(void) {
 	// Save terminal settings and setup cleanup on exit.
-	if (tcgetattr(STDIN_FILENO, &E.term_orig) == -1) die("tcgetattr");
+	if (tcgetattr(STDIN_FILENO, &E.term_orig) == -1) DIE("tcgetattr");
 	atexit(reset_term);
 
 	// Set terminal to raw mode.
@@ -126,7 +128,7 @@ static void enable_raw_mode(void) {
 	term_raw.c_cc[VMIN] = 0;
 	term_raw.c_cc[VTIME] = 1;
 
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) die("tcsetattr");
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) DIE("tcsetattr");
 }
 
 static int read_key(void) {
@@ -226,7 +228,7 @@ static int get_window_size(uint *rows, uint *cols) {
 static void insert_line(size_t at) {
 	if (at > E.numlines) at = E.numlines;
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
-	if (!E.lines) die("realloc");
+	if (!E.lines) DIE("realloc");
 
 	if (at < E.numlines - 1)
 		memmove(&E.lines[at + 1], &E.lines[at],
@@ -284,7 +286,7 @@ static void join_lines(size_t at) {
 
 		target->chars =
 			realloc(target->chars, target->len + add_len + 1);
-		if (!target->chars) die("realloc");
+		if (!target->chars) DIE("realloc");
 
 		if (add_space) target->chars[target->len] = ' ';
 		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars,
@@ -300,7 +302,7 @@ static void line_insert_char(Line *line, size_t at, char c) {
 	if (at > line->len) at = line->len;
 	// line->len does not include the terminating '\0'
 	line->chars = realloc(line->chars, line->len + 1 + 1);
-	if (!line->chars) die("realloc");
+	if (!line->chars) DIE("realloc");
 	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
 	line->chars[at] = c;
 	line->len++;
@@ -314,7 +316,7 @@ static void line_delete_char(Line *line, size_t at) {
 		line->len - (at + 1) + 1);
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
-	if (!line->chars) die("realloc");
+	if (!line->chars) DIE("realloc");
 }
 
 // ---------------------------------- Input -----------------------------------
@@ -526,7 +528,7 @@ static void draw_welcome_message(ScreenBuffer *screen) {
 	int len_required =
 		snprintf(s, sizeof s, "ni editor -- version %s", Ni_VERSION);
 	if (len_required == -1) {
-		die("snprintf");
+		DIE("snprintf");
 	}
 	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
 	uint padding = (E.cols - len) / 2;
@@ -627,9 +629,9 @@ static void draw_lines(ScreenBuffer *screen) {
 
 static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 	char s[32];
-	int len_required = snprintf(s, sizeof s, "\x1b[%d;%dH", y + 1, x + 1);
-	if (len_required == -1 || len_required >= (int)sizeof s) return -1;
-	screen_append(screen, s, (uint)len_required);
+	int len = snprintf(s, sizeof s, "\x1b[%d;%dH", y + 1, x + 1);
+	if (len == -1 || len >= (int)sizeof s) DIE("place_cursor");
+	screen_append(screen, s, (uint)len);
 
 	return 0;
 }
@@ -666,7 +668,7 @@ static void editor_append_line(const char *chars, size_t len) {
 
 static void editor_open(const char *restrict fname) {
 	FILE *f = fopen(fname, "r");
-	if (!f) die("fopen");
+	if (!f) DIE("fopen");
 
 	E.numlines = 0;
 	if (E.lines) free(E.lines);
@@ -687,13 +689,11 @@ static void editor_open(const char *restrict fname) {
 // ---------------------------------- Main ------------------------------------
 static void editor_init(void) {
 	E.mode = MODE_NORMAL;
-	E.numlines = 0;
 	E.lines = NULL;
-	E.rowoff = 0;
-	E.coloff = 0;
-	E.cx = 0;
-	E.cy = 0;
-	if (get_window_size(&E.rows, &E.cols) == -1) die("get_window_size");
+	E.numlines = 0;
+	E.rowoff = E.coloff = 0;
+	E.cx = E.cy = E.rx = 0;
+	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
 
 int main(int argc, char *argv[]) {
