@@ -5,12 +5,15 @@
 /// external libraries.
 ///
 /// TODO:
-/// - saving
+/// - confirm save
+/// - suspend & resume
+/// - messages
 /// - searching
 /// - incremental search
 /// - command line
 /// - setting options
 /// - syntax highlighting
+/// - multiple buffers & load file
 #define STR(A) #A
 #define PERR(F, L, S) perror(F ":" STR(L) " " S)
 #define DIE(S)                                                                 \
@@ -32,10 +35,10 @@
 #include <unistd.h>
 
 // --------------------------------- Defines ----------------------------------
-#define Ni_VERSION "0.0.1"
+#define NI_VERSION "0.0.1"
 #define NORETURN __attribute__((noreturn)) void
 #define NI_TABSTOP 8
-static const char rendertab[] = {'>', '-'};
+#define NUM_UTIL_LINES 2
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
@@ -62,6 +65,12 @@ typedef enum EditorKey {
 	KEY_NOOP,
 } EditorKey;
 
+typedef enum EditorMsg {
+	MSG_NOMSG,
+	MSG_SAVED,
+	MSG_COUNT,
+} EditorMsg;
+
 typedef struct ScreenBuffer {
 	char *data;
 	size_t len;
@@ -81,6 +90,7 @@ typedef struct Editor {
 	uint rowoff, coloff;
 	uint rows, cols;
 	EditorMode mode;
+	EditorMsg msg;
 } Editor;
 
 typedef struct Mode {
@@ -88,10 +98,18 @@ typedef struct Mode {
 	void (*process_key)(int c);
 } Mode;
 
-// --------------------------------- State ------------------------------------
+// ------------------------------ State & Data --------------------------------
+static const char rendertab[] = {'>', '-'};
+
+static const char *messages[MSG_COUNT] = {
+	[MSG_NOMSG] = NULL,
+	[MSG_SAVED] = "Saved",
+};
+
 static Editor E;
 
 // ---------------------------------- Modes -----------------------------------
+static void editor_save(void);
 static void process_key_normal(const int c);
 static void process_key_insert(const int c);
 
@@ -358,6 +376,7 @@ static void process_key_normal(const int c) {
 	switch (c) {
 	case 'q':
 	case CTRL_KEY('q'): quit();
+	case CTRL_KEY('s'): editor_save(); break;
 
 	// Enter INSERT mode
 	case 'i':
@@ -514,8 +533,8 @@ static uint cx2rx(uint cx, Line *line) {
 static void editor_scroll(void) {
 	E.rx = E.cy < E.numlines ? cx2rx(E.cx, &E.lines[E.cy]) : E.cx;
 	if (E.cy < E.rowoff) E.rowoff = E.cy;
-	if ((E.cy + 1) > E.rowoff + (E.rows - 1))
-		E.rowoff = (E.cy + 1) - (E.rows - 1);
+	if ((E.cy + 1) > E.rowoff + (E.rows - NUM_UTIL_LINES))
+		E.rowoff = (E.cy + 1) - (E.rows - NUM_UTIL_LINES);
 	if (E.rx < E.coloff) E.coloff = E.rx;
 	if ((E.rx + 1) > E.coloff + E.cols) E.coloff = (E.rx + 1) - E.cols;
 }
@@ -540,7 +559,7 @@ static void screen_free(ScreenBuffer *screen) {
 static void draw_welcome_message(ScreenBuffer *screen) {
 	char s[80];
 	int len_required =
-		snprintf(s, sizeof s, "ni editor -- version %s", Ni_VERSION);
+		snprintf(s, sizeof s, "ni editor -- version %s", NI_VERSION);
 	if (len_required == -1) DIE("snprintf");
 	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
 	uint padding = (E.cols - len) / 2;
@@ -569,7 +588,7 @@ static int draw_status(ScreenBuffer *screen) {
 		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
 	char filename[32];
-	int filename_len = snprintf(filename, sizeof filename - 1, " <%s>",
+	int filename_len = snprintf(filename, sizeof filename - 1, " %s",
 				    E.filename == NULL ? "NOFILE" : E.filename);
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
@@ -611,6 +630,14 @@ static int draw_status(ScreenBuffer *screen) {
 	return 0;
 }
 
+static int draw_message(ScreenBuffer *screen) {
+	if (E.msg == MSG_NOMSG) return 0;
+	char message[256];
+	int len = snprintf(message, E.cols, "%s", messages[E.msg]);
+	if (len < 0) return -1;
+	return screen_append(screen, message, (size_t)len);
+}
+
 static void render(Line *line) {
 	const char *chars = line->chars;
 	const size_t len = line->len;
@@ -634,14 +661,15 @@ static void render(Line *line) {
 
 static void draw_lines(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
+		bool clear = true;
 		uint idx = y + E.rowoff;
 
-		if (y == E.rows - 1) {
+		if (y == E.rows - 2) {
 			draw_status(screen);
-			return;
-		}
-
-		if (idx >= E.numlines) {
+			clear = false;
+		} else if (y == E.rows - 1) {
+			draw_message(screen);
+		} else if (idx >= E.numlines) {
 			if (E.numlines == 0 && y == E.rows / 3)
 				draw_welcome_message(screen);
 			else screen_append(screen, "~", 1);
@@ -658,8 +686,8 @@ static void draw_lines(ScreenBuffer *screen) {
 			screen_append(screen, rchars + E.coloff, len);
 		}
 
-		screen_append(screen, "\x1b[K", 3); // clear till EOL
-		screen_append(screen, "\r\n", 2);
+		if (clear) screen_append(screen, "\x1b[K", 3);
+		if (y != E.rows - 1) screen_append(screen, "\r\n", 2);
 	}
 }
 
@@ -725,8 +753,24 @@ static void editor_open(const char *restrict fname) {
 	E.filename = strdup(fname);
 }
 
+static void editor_save(void) {
+	if (!E.filename) return;
+
+	FILE *f = fopen(E.filename, "w");
+	if (!f) DIE("fopen");
+
+	for (uint i = 0; i < E.numlines; i++) {
+		fputs(E.lines[i].chars, f);
+		fputs("\n", f);
+	}
+
+	E.msg = MSG_SAVED;
+	fclose(f);
+}
+
 // ---------------------------------- Main ------------------------------------
 static void editor_init(void) {
+	E.msg = MSG_NOMSG;
 	E.mode = MODE_NORMAL;
 	E.lines = NULL;
 	E.filename = NULL;
