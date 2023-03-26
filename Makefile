@@ -1,6 +1,6 @@
 CC     := clang
 CFLAGS := -std=c17 -g -Werror -Wall -Wextra -Weverything -pedantic
-CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded
+CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded -Wno-unsafe-buffer-usage
 MAX_LINES := 1024
 
 ni: ni.c

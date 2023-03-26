@@ -79,8 +79,8 @@ typedef struct ScreenBuffer {
 } ScreenBuffer;
 
 typedef struct Line {
-	size_t len, rlen;
-	char *chars, *render;
+	size_t len;
+	char *chars;
 } Line;
 
 typedef struct Editor {
@@ -99,6 +99,9 @@ typedef struct Mode {
 	char *status;
 	void (*process_key)(int c);
 } Mode;
+
+// --------------------------------- Buffers ----------------------------------
+static char render_buffer[1024];
 
 // ------------------------------ State & Data --------------------------------
 static const char rendertab[] = {'>', '-'};
@@ -254,8 +257,6 @@ static void insert_line(size_t at) {
 
 	E.lines[at].len = 0;
 	E.lines[at].chars = strdup("");
-	E.lines[at].rlen = 0;
-	E.lines[at].render = NULL;
 
 	E.numlines++;
 }
@@ -265,7 +266,6 @@ static void delete_line(size_t at) {
 	if (at >= E.numlines) at = E.numlines - 1;
 
 	free(E.lines[at].chars);
-	if (E.lines[at].render) free(E.lines[at].render);
 	E.lines[at].chars = NULL;
 
 	if (at < E.numlines - 1)
@@ -283,7 +283,6 @@ static void split_line(size_t at, size_t split_at) {
 	if (split_at >= E.lines[at].len) return;
 
 	free(E.lines[at + 1].chars);
-	if (E.lines[at + 1].render) free(E.lines[at + 1].render);
 	size_t len = E.lines[at].len - split_at;
 	E.lines[at + 1].chars = strndup(&E.lines[at].chars[split_at], len);
 	E.lines[at + 1].len = len;
@@ -641,25 +640,19 @@ static int draw_message(ScreenBuffer *screen) {
 	return screen_append(screen, message, (size_t)len);
 }
 
-static void render(Line *line) {
+static size_t render(const Line *line, char *dst, size_t size) {
 	const char *chars = line->chars;
 	const size_t len = line->len;
 
-	uint ntabs = 0;
-	for (uint i = 0; i < len; i++)
-		if (chars[i] == '\t') ntabs++;
-
 	size_t rlen = 0;
-	char *render = realloc(line->render, len + 1 + ntabs * NI_TABSTOP);
-	for (uint i = 0; i < len; i++)
+	for (uint i = 0; i < len && i < size - 1; i++)
 		if (chars[i] == '\t') {
-			render[rlen++] = rendertab[0];
-			while (rlen % NI_TABSTOP) render[rlen++] = rendertab[1];
-		} else render[rlen++] = chars[i];
-	render[rlen] = '\0';
+			dst[rlen++] = rendertab[0];
+			while (rlen % NI_TABSTOP) dst[rlen++] = rendertab[1];
+		} else dst[rlen++] = chars[i];
+	dst[rlen] = '\0';
 
-	line->render = render;
-	line->rlen = rlen;
+	return rlen;
 }
 
 static void draw_lines(ScreenBuffer *screen) {
@@ -679,14 +672,12 @@ static void draw_lines(ScreenBuffer *screen) {
 		} else if (E.coloff < E.lines[idx].len) {
 			Line *line = &E.lines[idx];
 
-			render(line);
-			char *rchars = line->render;
-			size_t rlen = line->rlen;
+			size_t rlen = render(line, render_buffer, sizeof(render_buffer));
 
 			uint len = rlen - E.coloff <= E.cols
 					 ? (uint)(rlen - E.coloff)
 					 : E.cols;
-			screen_append(screen, rchars + E.coloff, len);
+			screen_append(screen, render_buffer + E.coloff, len);
 		}
 
 		if (clear) screen_append(screen, "\x1b[K", 3);
@@ -731,8 +722,6 @@ static void editor_append_line(const char *chars, size_t len) {
 	len = line_length(chars, len);
 	E.lines[i].chars = strndup(chars, len);
 	E.lines[i].len = len;
-	E.lines[i].render = NULL;
-	E.lines[i].rlen = 0;
 }
 
 static void editor_open(const char *restrict fname) {

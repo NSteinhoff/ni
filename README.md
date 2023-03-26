@@ -1,3 +1,16 @@
-# Kilo - A minimalist text editor
+# NI - A minimalist modal text editor
 
-Source: [antirez](http://antirez.com/news/108)
+NI is a minimalist modal text editor that aims to provide basic file editing
+functionality in under 1000 lines of C code. Based on the [Antirez' Kilo
+editor](http://antirez.com/news/108). The idea is to make hard choices about
+which features provide the most value given the constraints. This should
+hopefully result in an increase in the average value per line over time. NI is
+not a code golfing exercise. The code strives to be readable and maintainable.
+
+
+# NOTES
+
+## Manage memory of the line being edited?
+
+Load line into a WIP buffer and commit when leaving insert mode?
+How would we deal with multi-line editing?
