@@ -5,8 +5,9 @@
 /// external libraries.
 ///
 /// TODO:
-/// - confirm save
 /// - suspend & resume
+/// - key chords
+/// - undo / redo
 /// - messages
 /// - searching
 /// - incremental search
@@ -68,6 +69,7 @@ typedef enum EditorKey {
 typedef enum EditorMsg {
 	MSG_NOMSG,
 	MSG_SAVED,
+	MSG_LOADED,
 	MSG_COUNT,
 } EditorMsg;
 
@@ -104,6 +106,7 @@ static const char rendertab[] = {'>', '-'};
 static const char *messages[MSG_COUNT] = {
 	[MSG_NOMSG] = NULL,
 	[MSG_SAVED] = "Saved",
+	[MSG_LOADED] = "File loaded",
 };
 
 static Editor E;
@@ -751,6 +754,7 @@ static void editor_open(const char *restrict fname) {
 	fclose(f);
 	if (E.filename) free(E.filename);
 	E.filename = strdup(fname);
+	E.msg = MSG_LOADED;
 }
 
 static void editor_save(void) {
