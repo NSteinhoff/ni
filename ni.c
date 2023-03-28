@@ -5,23 +5,29 @@
 /// external libraries.
 ///
 /// TODO:
-/// - suspend & resume
 /// - key chords
 /// - undo / redo
 /// - messages
 /// - searching
 /// - incremental search
 /// - command line
-/// - setting options
+/// - suspend & resume
 /// - syntax highlighting
 /// - multiple buffers & load file
+/// - setting options
 #define STR(A) #A
-#define PERR(F, L, S) perror(F ":" STR(L) " " S)
+#define PERROR_(F, L, S)                                                       \
+	do {                                                                   \
+		if (errno >= 0 && errno < sys_nerr)                            \
+			perror(F ":" STR(L) " " S);                            \
+		else printf("%s:%d %s\n", F, L, S);                            \
+	} while (0)
+#define PERROR(S) PERROR_(__FILE__, __LINE__, S)
 #define DIE(S)                                                                 \
 	do {                                                                   \
 		write(STDOUT_FILENO, "\x1b[2J", 4);                            \
 		write(STDOUT_FILENO, "\x1b[H", 3);                             \
-		PERR(__FILE__, __LINE__, S);                                   \
+		PERROR(S);                                                     \
 		exit(EXIT_FAILURE);                                            \
 	} while (0)
 
