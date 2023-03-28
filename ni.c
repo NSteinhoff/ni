@@ -141,10 +141,10 @@ static Mode modes[MODE_COUNT] = {
 };
 
 // -------------------------------- Terminal ----------------------------------
-static NORETURN quit(void) {
+static NORETURN quit(int code) {
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
-	exit(EXIT_SUCCESS);
+	exit(code);
 }
 
 static void reset_term(void) {
@@ -382,8 +382,8 @@ static void cursor_normalize(void) {
 
 static void process_key_normal(const int c) {
 	switch (c) {
-	case 'q':
-	case CTRL_KEY('q'): quit();
+	case 'q': quit(EXIT_SUCCESS);
+	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
 
 	// Enter INSERT mode
