@@ -43,6 +43,7 @@
 
 // --------------------------------- Defines ----------------------------------
 #define NI_VERSION "0.0.1"
+#define MAX_RENDER 1024
 #define NORETURN __attribute__((noreturn)) void
 #define NI_TABSTOP 8
 #define NUM_UTIL_LINES 2
@@ -107,7 +108,10 @@ typedef struct Mode {
 } Mode;
 
 // --------------------------------- Buffers ----------------------------------
-static char render_buffer[1024];
+static char render_buffer[MAX_RENDER]; // renders individual lines before
+				       // printing them to the screen.  TODO: Do
+				       // we even need this buffer? Why not
+				       // render straight to the screen?
 
 // ------------------------------ State & Data --------------------------------
 static const char rendertab[] = {'>', '-'};
@@ -164,9 +168,7 @@ static int read_key(void) {
 	if (read(STDIN_FILENO, &c, 1) != 1) goto error;
 	if (c != '\x1b') {
 		switch (c) {
-
 		case 13: return KEY_RETURN;
-
 		case 8:
 		case 127: return KEY_DELETE;
 
@@ -678,7 +680,8 @@ static void draw_lines(ScreenBuffer *screen) {
 		} else if (E.coloff < E.lines[idx].len) {
 			Line *line = &E.lines[idx];
 
-			size_t rlen = render(line, render_buffer, sizeof(render_buffer));
+			size_t rlen = render(line, render_buffer,
+					     sizeof(render_buffer));
 
 			uint len = rlen - E.coloff <= E.cols
 					 ? (uint)(rlen - E.coloff)
