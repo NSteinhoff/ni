@@ -481,7 +481,8 @@ static void process_key_normal(const int c) {
 		break;
 	case 'o':
 		E.cx = 0;
-		insert_line(E.cy++ + 1);
+		if (E.numlines == 0) insert_line(E.cy);
+		else insert_line(E.cy++ + 1);
 		E.mode = MODE_INSERT;
 		break;
 
