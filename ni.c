@@ -58,6 +58,7 @@ typedef struct termios Term;
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
+	MODE_CHORD,
 	MODE_COUNT,
 } EditorMode;
 
@@ -93,6 +94,8 @@ typedef struct Line {
 
 typedef struct Editor {
 	Term term_orig;
+	Term term;
+	char chord;
 	char *filename;
 	Line *lines;
 	uint numlines;
@@ -129,10 +132,12 @@ static Editor E;
 static void editor_save(void);
 static void process_key_normal(const int c);
 static void process_key_insert(const int c);
+static void process_key_chord(const int c);
 
 static Mode modes[MODE_COUNT] = {
 	[MODE_NORMAL] = {"NORMAL", process_key_normal},
 	[MODE_INSERT] = {"INSERT", process_key_insert},
+	[MODE_CHORD] = {"CHORD", process_key_chord},
 };
 
 // -------------------------------- Terminal ----------------------------------
@@ -147,78 +152,82 @@ static void reset_term(void) {
 		DIE("tcsetattr");
 }
 
+static void enable_immediate_mode(void) {
+	E.term.c_cc[VMIN] = 0;
+	E.term.c_cc[VTIME] = 0;
+
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
+}
+
+static void enable_block_mode(void) {
+	E.term.c_cc[VMIN] = 1;
+	E.term.c_cc[VTIME] = 0;
+
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
+}
+
 static void enable_raw_mode(void) {
 	// Save terminal settings and setup cleanup on exit.
 	if (tcgetattr(STDIN_FILENO, &E.term_orig) == -1) DIE("tcgetattr");
 	atexit(reset_term);
 
 	// Set terminal to raw mode.
-	Term term_raw = E.term_orig;
-	term_raw.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-	term_raw.c_oflag &= ~(uint)(OPOST);
-	term_raw.c_cflag |= (uint)(CS8);
-	term_raw.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
-	term_raw.c_cc[VMIN] = 0;
-	term_raw.c_cc[VTIME] = 1;
+	E.term = E.term_orig;
+	E.term.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+	E.term.c_oflag &= ~(uint)(OPOST);
+	E.term.c_cflag |= (uint)(CS8);
+	E.term.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
+	E.term.c_cc[VMIN] = 1;
+	E.term.c_cc[VTIME] = 0;
 
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &term_raw) == -1) DIE("tcsetattr");
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
 }
 
-static int read_key(void) {
-	char c;
-	if (!READ(c)) goto error;
-	if (c != '\x1b') {
-		switch (c) {
-		case 13: return KEY_RETURN;
-		case 8:
-		case 127: return KEY_DELETE;
-
-		default: return c;
-		}
-	}
-
-	// Start reading multi-byte escape sequences
+static int read_escape_sequence(void) {
 	char seq[3];
 
 	if (!READ(seq[0])) return KEY_ESCAPE;
 	if (!READ(seq[1])) return KEY_ESCAPE;
+	if (seq[0] != '[') return KEY_ESCAPE;
 
-	// CSI: \x1b[...
-	// For now we only deal with '['
-	if (seq[0] != '[') goto error;
-
-	// Check the character following the CSI
 	switch (seq[1]) {
-
-	// CSI [A-Z]
 	case 'A': return KEY_UP;
 	case 'B': return KEY_DOWN;
 	case 'D': return KEY_LEFT;
 	case 'C': return KEY_RIGHT;
+	}
 
-	// CSI [0-9]~
-	default: {
-		if (!isnumber(c) || !READ(seq[2]) || seq[2] != '~')
-			goto error;
-
-		switch (seq[1]) {
+	if (isnumber(seq[1]) && READ(seq[2]) && seq[2] == '~') switch (seq[1]) {
 		case '3': return KEY_DELETE;
 		case '5': return KEY_PAGE_UP;
 		case '6': return KEY_PAGE_DOWN;
 		}
-	}
-	}
 
-error:
-	return KEY_NOOP;
+	return KEY_ESCAPE;
+}
+
+static int read_key(void) {
+	char c;
+	if (!READ(c)) return KEY_NOOP;
+	switch (c) {
+	case 13: return KEY_RETURN;
+	case 8:
+	case 127: return KEY_DELETE;
+	case '\x1b': {
+		enable_immediate_mode();
+		int e = read_escape_sequence();
+		enable_block_mode();
+		return e;
+	}
+	default: return c;
+	}
 }
 
 static int get_cursor_position(uint *rows, uint *cols) {
 	// Solicit device report
 	if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
 
-	// Read device report
-	// \x1b[<rows>;<cols>R
+	// Read device report: \x1b[<rows>;<cols>R
 	char buf[32];
 	uint i = 0;
 	while (i < sizeof buf - 1) {
@@ -460,7 +469,10 @@ static void process_key_normal(const int c) {
 
 	// File start and end
 	case 'g':
-	case 'G': E.cy = c == 'g' ? 0 : E.numlines - 1; break;
+		E.mode = MODE_CHORD;
+		E.chord = 'g';
+		break;
+	case 'G': E.cy = E.numlines - 1; break;
 
 	// Inserting lines
 	case 'O':
@@ -478,8 +490,11 @@ static void process_key_normal(const int c) {
 	// Join lines
 	case 'J': join_lines(E.cy); break;
 
-	// Deleting lines
-	case 'd': delete_line(E.cy); break;
+	// Deleting
+	case 'd':
+		E.mode = MODE_CHORD;
+		E.chord = 'd';
+		break;
 
 	// Delete single character
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
@@ -512,6 +527,23 @@ static void process_key_insert(const int c) {
 			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
 		break;
 	}
+}
+
+static void process_key_chord(const int c) {
+	switch (E.chord) {
+	case 'g':
+		switch (c) {
+		case 'g': E.cy = 0; break;
+		}
+		break;
+	case 'd':
+		switch (c) {
+		case 'd': delete_line(E.cy); break;
+		}
+		break;
+	}
+	E.chord = '\0';
+	E.mode = MODE_NORMAL;
 }
 
 static void process_key(void) {
@@ -578,6 +610,13 @@ static int draw_status(ScreenBuffer *screen) {
 	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
 				modes[E.mode].status);
 	if (mode_len == -1) return -1;
+	if (mode_len < (int)sizeof mode && E.mode == MODE_CHORD) {
+		int operator_len = snprintf(mode + mode_len,
+					    sizeof mode - 1 - (size_t)mode_len,
+					    "%c", E.chord);
+		if (operator_len == -1) return -1;
+		mode_len += operator_len;
+	}
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 
 	char cursor[12];
@@ -764,6 +803,7 @@ static void editor_save(void) {
 static void editor_init(void) {
 	E.msg = MSG_NOMSG;
 	E.mode = MODE_NORMAL;
+	E.chord = '\0';
 	E.lines = NULL;
 	E.filename = NULL;
 	E.numlines = 0;
