@@ -626,7 +626,7 @@ static int draw_status(ScreenBuffer *screen) {
 	cursor_len =
 		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
-	char filename[32];
+	char filename[128];
 	int filename_len = snprintf(filename, sizeof filename - 1, " %s",
 				    E.filename == NULL ? "NOFILE" : E.filename);
 	if (filename_len == -1) return -1;
