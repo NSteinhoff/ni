@@ -385,6 +385,7 @@ static void process_key_normal(const int c) {
 	case 'q': quit(EXIT_SUCCESS);
 	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
+	case CTRL_KEY('x'): editor_save(); quit(EXIT_SUCCESS);
 
 	// Enter INSERT mode
 	case 'i':
