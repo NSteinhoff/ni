@@ -497,6 +497,18 @@ static void process_key_normal(const int c) {
 		E.chord = 'd';
 		break;
 
+	case 'D':
+		if (E.numlines == 0) break;
+		E.lines[E.cy].len = E.cx--;
+		break;
+
+	// Changing
+	case 'C':
+		if (E.numlines == 0) process_key_normal('i');
+		process_key_normal('D');
+		process_key_normal('a');
+		break;
+
 	// Delete single character
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
 
