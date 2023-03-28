@@ -49,6 +49,7 @@
 #define NUM_UTIL_LINES 2
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
+#define READ(C) (read(STDIN_FILENO, &(C), 1) == 1)
 
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
@@ -165,7 +166,7 @@ static void enable_raw_mode(void) {
 
 static int read_key(void) {
 	char c;
-	if (read(STDIN_FILENO, &c, 1) != 1) goto error;
+	if (!READ(c)) goto error;
 	if (c != '\x1b') {
 		switch (c) {
 		case 13: return KEY_RETURN;
@@ -179,8 +180,8 @@ static int read_key(void) {
 	// Start reading multi-byte escape sequences
 	char seq[3];
 
-	if (read(STDIN_FILENO, &seq[0], 1) != 1) return KEY_ESCAPE;
-	if (read(STDIN_FILENO, &seq[1], 1) != 1) return KEY_ESCAPE;
+	if (!READ(seq[0])) return KEY_ESCAPE;
+	if (!READ(seq[1])) return KEY_ESCAPE;
 
 	// CSI: \x1b[...
 	// For now we only deal with '['
@@ -196,20 +197,8 @@ static int read_key(void) {
 	case 'C': return KEY_RIGHT;
 
 	// CSI [0-9]~
-	case '0':
-	case '1':
-	case '2':
-	case '3':
-	case '4':
-	case '5':
-	case '6':
-	case '7':
-	case '8':
-	case '9': {
-		// Sequences like where a number follows the CSI end with a
-		// trailing '~', so we read one more character.
-		// e.g. 'CSI 5~'
-		if (read(STDIN_FILENO, &seq[2], 1) != 1 || seq[2] != '~')
+	default: {
+		if (!isnumber(c) || !READ(seq[2]) || seq[2] != '~')
 			goto error;
 
 		switch (seq[1]) {
@@ -233,7 +222,7 @@ static int get_cursor_position(uint *rows, uint *cols) {
 	char buf[32];
 	uint i = 0;
 	while (i < sizeof buf - 1) {
-		if (read(STDIN_FILENO, &buf[i], 1) != 1) return -1;
+		if (!READ(buf[i])) return -1;
 		if (buf[i++] == 'R') break;
 	}
 	buf[i] = '\0';
