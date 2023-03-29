@@ -5,27 +5,28 @@
 /// external libraries.
 ///
 /// TODO:
+/// - static memory allocation
 /// - key chords
 /// - undo / redo
 /// - messages
 /// - searching
 /// - incremental search
 /// - command line
-/// - suspend & resume
 /// - syntax highlighting
-/// - multiple buffers & load file
 /// - setting options
-/// - terminal resize
+/// - suspend & resume
+/// - multiple buffers & load file
 
 // -------------------------------- Includes ----------------------------------
-#include <ctype.h>
-#include <errno.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <termios.h>
-#include <unistd.h>
+#include <ctype.h>   // isnumber, isblank, isprint, isspace
+#include <errno.h>   // errno
+#include <signal.h>  // signal, SIGWINCH
+#include <stdbool.h> // bool, true, false
+#include <stdio.h>   // fopen, fclose, perror, sys_nerr
+#include <stdlib.h>  // realloc, free, exit, atexit
+#include <string.h>  // strndup, strdup, memmove
+#include <termios.h> // struct termios, tcsetattr, tcgetattr, TCSANOW, BRKINT, ICRNL, INPCK, ISTRIP, IXON, OPOST, CS8, ECHO, ICANON, ISIG, IEXTEN
+#include <unistd.h>  // write, read, STDIN_FILENO, STDOUT_FILENO
 
 // --------------------------------- Defines ----------------------------------
 #define NI_VERSION "0.0.1"
@@ -255,6 +256,7 @@ static int get_window_size(uint *rows, uint *cols) {
 
 	return 0;
 }
+
 // --------------------------------- Editing ----------------------------------
 static void insert_line(size_t at) {
 	if (at > E.numlines) at = E.numlines;
@@ -817,6 +819,13 @@ static void editor_save(void) {
 }
 
 // ---------------------------------- Main ------------------------------------
+static void handle_resize(int sig) {
+	(void)sig;
+	if (get_window_size(&E.rows, &E.cols) == -1)
+		DIE("get_window_size in handle_resize");
+	refresh_screen();
+}
+
 static void editor_init(void) {
 	E.msg = MSG_NOMSG;
 	E.mode = MODE_NORMAL;
@@ -830,6 +839,7 @@ static void editor_init(void) {
 }
 
 int main(int argc, char *argv[]) {
+	signal(SIGWINCH, handle_resize);
 	enable_raw_mode();
 	editor_init();
 	if (argc >= 2) editor_open(argv[1]);
