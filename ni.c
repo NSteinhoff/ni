@@ -63,6 +63,13 @@
 typedef unsigned int uint;
 typedef struct termios Term;
 
+typedef enum Direction {
+	DIRECTION_UP,
+	DIRECTION_DOWN,
+	DIRECTION_LEFT,
+	DIRECTION_RIGHT,
+} Direction;
+
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
@@ -221,11 +228,15 @@ outro:
 static int read_key(void) {
 	char c;
 	if (!READ(c)) return KEY_NOOP;
+
 	switch (c) {
 	case 13: return KEY_RETURN;
+
 	case 8:
 	case 127: return KEY_DELETE;
+
 	case '\x1b': return read_escape_sequence();
+
 	default: return c;
 	}
 }
@@ -252,6 +263,7 @@ static int get_cursor_position(uint *rows, uint *cols) {
 static int get_window_size(uint *rows, uint *cols) {
 	// Reset cursor to home
 	if (!SEND_ESCAPE("\x1b[H")) return -1;
+
 	// Move to end
 	if (!SEND_ESCAPE("\x1b[999C\x1b[999B")) return -1;
 	if (get_cursor_position(rows, cols) == -1) return -1;
@@ -262,6 +274,7 @@ static int get_window_size(uint *rows, uint *cols) {
 // --------------------------------- Editing ----------------------------------
 static void insert_line(size_t at) {
 	if (at > E.numlines) at = E.numlines;
+
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 	if (!E.lines) DIE("realloc");
 
@@ -335,10 +348,13 @@ static void join_lines(size_t at) {
 
 static void line_insert_char(Line *line, size_t at, char c) {
 	if (at > line->len) at = line->len;
+
 	// line->len does not include the terminating '\0'
 	line->chars = realloc(line->chars, line->len + 1 + 1);
 	if (!line->chars) DIE("realloc");
+
 	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
+
 	line->chars[at] = c;
 	line->len++;
 }
@@ -347,35 +363,16 @@ static void line_delete_char(Line *line, size_t at) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
+
 	memmove(&line->chars[at], &line->chars[at + 1],
 		line->len - (at + 1) + 1);
+
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
 }
 
 // ---------------------------------- Input -----------------------------------
-static void cursor_move(int c) {
-	switch (c) {
-	case 'k':
-	case KEY_UP: E.cy > 0 && E.cy--; break;
-	case 'j':
-	case KEY_DOWN:
-		if (E.numlines != 0 && E.cy < E.numlines - 1) E.cy++;
-		break;
-	case 'h':
-	case KEY_LEFT: E.cx > 0 && E.cx--; break;
-	case 'l':
-	case KEY_RIGHT:
-		if (E.numlines != 0 && E.cx < E.lines[E.cy].len - 1) E.cx++;
-		break;
-	default: return;
-	}
-
-	if (E.numlines == 0 || E.lines[E.cy].len == 0) E.cx = 0;
-	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
-}
-
 static void cursor_normalize(void) {
 	if (E.numlines == 0) {
 		E.cy = 0;
@@ -384,8 +381,29 @@ static void cursor_normalize(void) {
 	}
 
 	if (E.cy >= E.numlines) E.cy = E.numlines - 1;
-	if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
 	if (E.lines[E.cy].len == 0) E.cx = 0;
+	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+}
+
+static void cursor_move(Direction direction) {
+	switch (direction) {
+	case DIRECTION_UP:
+		if (E.cy > 0) E.cy--;
+		break;
+	case DIRECTION_DOWN:
+		if (E.numlines > 0 && E.cy < E.numlines - 1) E.cy++;
+		break;
+	case DIRECTION_LEFT:
+		if (E.numlines > 0 && E.cx > 0) E.cx--;
+		break;
+	case DIRECTION_RIGHT:
+		if (E.numlines > 0 && E.cy < E.numlines &&
+		    E.lines[E.cy].len > 0 && E.cx < E.lines[E.cy].len - 1)
+			E.cx++;
+		break;
+	}
+
+	cursor_normalize();
 }
 
 static void process_key_normal(const int c) {
@@ -423,10 +441,11 @@ static void process_key_normal(const int c) {
 
 	// Jump half-screen up/down
 	case CTRL_KEY('d'):
-		for (uint n = E.rows / 2; n > 0; n--) cursor_move('j');
+		for (uint n = E.rows / 2; n > 0; n--)
+			cursor_move(DIRECTION_DOWN);
 		break;
 	case CTRL_KEY('u'):
-		for (uint n = E.rows / 2; n > 0; n--) cursor_move('k');
+		for (uint n = E.rows / 2; n > 0; n--) cursor_move(DIRECTION_UP);
 		break;
 
 	// Start/End of line
@@ -520,7 +539,19 @@ static void process_key_normal(const int c) {
 	// Delete single character
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
 
-	default: cursor_move(c);
+	case 'k':
+	case KEY_UP: cursor_move(DIRECTION_UP); break;
+
+	case 'j':
+	case KEY_DOWN: cursor_move(DIRECTION_DOWN); break;
+
+	case 'h':
+	case KEY_LEFT: cursor_move(DIRECTION_LEFT); break;
+
+	case 'l':
+	case KEY_RIGHT: cursor_move(DIRECTION_RIGHT); break;
+
+	default: break;
 	}
 }
 
@@ -557,12 +588,14 @@ static void process_key_chord(const int c) {
 		case 'g': E.cy = 0; break;
 		}
 		break;
+
 	case 'd':
 		switch (c) {
 		case 'd': delete_line(E.cy); break;
 		}
 		break;
 	}
+
 	E.chord = '\0';
 	E.mode = MODE_NORMAL;
 }
@@ -573,13 +606,16 @@ static void process_key(void) {
 }
 
 static uint cx2rx(uint cx, Line *line) {
+	if (!line->len) return cx;
+
 	const char *chars = line->chars;
 	uint rx = 0;
-	if (!line->len) return cx;
+
 	for (size_t i = 0; i < cx; i++) {
 		if (chars[i] == '\t') rx += NI_TABSTOP - (rx % NI_TABSTOP);
 		else rx++;
 	}
+
 	return rx;
 }
 
@@ -595,6 +631,7 @@ static void editor_scroll(void) {
 // --------------------------------- Output -----------------------------------
 static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
 	if (screen->len + len > MAX_SCREEN_BUFFER_LEN) return -1;
+
 	memcpy(&screen->data[screen->len], s, len);
 	screen->len += len;
 
@@ -684,9 +721,11 @@ static int draw_status(ScreenBuffer *screen) {
 
 static int draw_message(ScreenBuffer *screen) {
 	if (E.msg == MSG_NOMSG) return 0;
+
 	char message[256];
 	int len = snprintf(message, E.cols, "%s", messages[E.msg]);
 	if (len < 0) return -1;
+
 	return screen_append(screen, message, (size_t)len);
 }
 
@@ -762,6 +801,7 @@ static void refresh_screen(void) {
 static size_t line_length(const char *chars, size_t len) {
 	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
 		len--;
+
 	return len;
 }
 

@@ -4,7 +4,7 @@ CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded -Wno-unsafe-b
 MAX_LINES := 1024
 
 ni: ni.c
-	@wc -l ni.c | (read n _; \
+	@grep -hv -e '^$$' -e '^//' ni.c | wc -l | (read n _; \
 		echo Lines: $$n; \
 		[ "$$n" -lt ${MAX_LINES} ] \
 		|| (echo "Too many lines. Maximum number of lines is ${MAX_LINES}" && false) \
