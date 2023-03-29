@@ -38,6 +38,7 @@
 		else printf("%s:%d %s\n", F, L, S);                            \
 	} while (0)
 #define PERROR(S) PERROR_(__FILE__, __LINE__, S)
+#define MAX_SCREEN_BUFFER_LEN 1 << 16
 #define MAX_RENDER 1024
 #define NORETURN __attribute__((noreturn)) void
 #define NI_TABSTOP 8
@@ -90,7 +91,7 @@ typedef enum EditorMsg {
 } EditorMsg;
 
 typedef struct ScreenBuffer {
-	char *data;
+	char data[MAX_SCREEN_BUFFER_LEN];
 	size_t len;
 } ScreenBuffer;
 
@@ -123,6 +124,7 @@ static char render_buffer[MAX_RENDER]; // renders individual lines before
 				       // printing them to the screen.  TODO: Do
 				       // we even need this buffer? Why not
 				       // render straight to the screen?
+static ScreenBuffer screen;
 
 // ------------------------------ State & Data --------------------------------
 static const char rendertab[] = {'>', '-'};
@@ -592,19 +594,11 @@ static void editor_scroll(void) {
 
 // --------------------------------- Output -----------------------------------
 static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
-	char *new = realloc(screen->data,
-			    sizeof *screen->data * (screen->len + len));
-	if (new == NULL) return -1;
-	screen->data = new;
-
+	if (screen->len + len > MAX_SCREEN_BUFFER_LEN) return -1;
 	memcpy(&screen->data[screen->len], s, len);
 	screen->len += len;
 
 	return 0;
-}
-
-static void screen_free(ScreenBuffer *screen) {
-	free(screen->data);
 }
 
 static void draw_welcome_message(ScreenBuffer *screen) {
@@ -752,7 +746,7 @@ static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 }
 
 static void refresh_screen(void) {
-	ScreenBuffer screen = {0};
+	screen.len = 0;
 	editor_scroll();
 	screen_append(&screen, "\x1b[?25l", 4); // hide cursor
 
@@ -762,7 +756,6 @@ static void refresh_screen(void) {
 
 	screen_append(&screen, "\x1b[?25h", 4); // show cursor
 	write(STDOUT_FILENO, screen.data, screen.len);
-	screen_free(&screen);
 }
 
 // -------------------------------- File I/O ----------------------------------
