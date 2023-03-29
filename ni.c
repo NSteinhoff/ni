@@ -103,7 +103,7 @@ typedef struct ScreenBuffer {
 } ScreenBuffer;
 
 typedef struct Line {
-	size_t len;
+	uint len;
 	char *chars;
 } Line;
 
@@ -288,7 +288,7 @@ static void insert_line(size_t at) {
 	E.numlines++;
 }
 
-static void delete_line(size_t at) {
+static void delete_line(uint at) {
 	if (E.numlines == 0) return;
 	if (at >= E.numlines) at = E.numlines - 1;
 
@@ -302,7 +302,7 @@ static void delete_line(size_t at) {
 	E.numlines--;
 }
 
-static void split_line(size_t at, size_t split_at) {
+static void split_line(uint at, uint split_at) {
 	if (E.numlines == 0) return;
 	if (at >= E.numlines) return;
 
@@ -310,7 +310,7 @@ static void split_line(size_t at, size_t split_at) {
 	if (split_at >= E.lines[at].len) return;
 
 	free(E.lines[at + 1].chars);
-	size_t len = E.lines[at].len - split_at;
+	uint len = E.lines[at].len - split_at;
 	E.lines[at + 1].chars = strndup(&E.lines[at].chars[split_at], len);
 	E.lines[at + 1].len = len;
 
@@ -320,7 +320,7 @@ static void split_line(size_t at, size_t split_at) {
 	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len + 1);
 }
 
-static void join_lines(size_t at) {
+static void join_lines(uint at) {
 	if (E.numlines <= 1) return;
 	if (at >= E.numlines) at = E.numlines - 1;
 
@@ -328,7 +328,7 @@ static void join_lines(size_t at) {
 	Line *const target = &E.lines[at];
 
 	if (src->len > 0) {
-		size_t add_len = E.lines[at + 1].len;
+		uint add_len = E.lines[at + 1].len;
 		const bool add_space = src->chars[0] != ' ';
 		if (add_space) add_len++;
 
@@ -346,7 +346,7 @@ static void join_lines(size_t at) {
 	delete_line(at + 1);
 }
 
-static void line_insert_char(Line *line, size_t at, char c) {
+static void line_insert_char(Line *line, uint at, char c) {
 	if (at > line->len) at = line->len;
 
 	// line->len does not include the terminating '\0'
@@ -359,7 +359,7 @@ static void line_insert_char(Line *line, size_t at, char c) {
 	line->len++;
 }
 
-static void line_delete_char(Line *line, size_t at) {
+static void line_delete_char(Line *line, uint at) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
@@ -380,9 +380,11 @@ static void cursor_normalize(void) {
 		return;
 	}
 
-	if (E.cy >= E.numlines) E.cy = E.numlines - 1;
-	if (E.lines[E.cy].len == 0) E.cx = 0;
-	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+	uint max_y = E.numlines - 1;
+	uint max_x = E.lines[E.cy].len == 0 ? 0 : E.lines[E.cy].len - 1;
+
+	if (E.cy > max_y) E.cy = max_y;
+	if (E.cx > max_x) E.cx = max_x;
 }
 
 static void cursor_move(Direction direction) {
@@ -424,7 +426,7 @@ static void process_key_normal(const int c) {
 		case 'a':
 			if (E.lines[E.cy].len > 0) E.cx++;
 			break;
-		case 'A': E.cx = (uint)E.lines[E.cy].len; break;
+		case 'A': E.cx = E.lines[E.cy].len; break;
 		case 'I': E.cx = 0; break;
 		}
 		break;
@@ -451,7 +453,7 @@ static void process_key_normal(const int c) {
 	// Start/End of line
 	case '0': E.cx = 0; break;
 	case '$':
-		if (E.numlines) E.cx = (uint)E.lines[E.cy].len - 1;
+		if (E.numlines) E.cx = E.lines[E.cy].len - 1;
 		break;
 
 	// Word wise movement
@@ -611,7 +613,7 @@ static uint cx2rx(uint cx, Line *line) {
 	const char *chars = line->chars;
 	uint rx = 0;
 
-	for (size_t i = 0; i < cx; i++) {
+	for (uint i = 0; i < cx; i++) {
 		if (chars[i] == '\t') rx += NI_TABSTOP - (rx % NI_TABSTOP);
 		else rx++;
 	}
@@ -729,11 +731,11 @@ static int draw_message(ScreenBuffer *screen) {
 	return screen_append(screen, message, (size_t)len);
 }
 
-static size_t render(const Line *line, char *dst, size_t size) {
+static uint render(const Line *line, char *dst, size_t size) {
 	const char *chars = line->chars;
-	const size_t len = line->len;
+	const uint len = line->len;
 
-	size_t rlen = 0;
+	uint rlen = 0;
 	for (uint i = 0; i < len && i < size - 1; i++)
 		if (chars[i] == '\t') {
 			dst[rlen++] = rendertab[0];
@@ -761,11 +763,11 @@ static void draw_lines(ScreenBuffer *screen) {
 		} else if (E.coloff < E.lines[idx].len) {
 			Line *line = &E.lines[idx];
 
-			size_t rlen = render(line, render_buffer,
+			uint rlen = render(line, render_buffer,
 					     sizeof(render_buffer));
 
 			uint len = rlen - E.coloff <= E.cols
-					 ? (uint)(rlen - E.coloff)
+					 ? (rlen - E.coloff)
 					 : E.cols;
 			screen_append(screen, render_buffer + E.coloff, len);
 		}
@@ -798,15 +800,15 @@ static void refresh_screen(void) {
 }
 
 // -------------------------------- File I/O ----------------------------------
-static size_t line_length(const char *chars, size_t len) {
+static uint line_length(const char *chars, uint len) {
 	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
 		len--;
 
 	return len;
 }
 
-static void editor_append_line(const char *chars, size_t len) {
-	size_t i = E.numlines;
+static void editor_append_line(const char *chars, uint len) {
+	uint i = E.numlines;
 	E.numlines++;
 	E.lines = realloc(E.lines, (sizeof *E.lines) * E.numlines);
 	len = line_length(chars, len);
@@ -827,7 +829,7 @@ static void editor_open(const char *restrict fname) {
 	ssize_t bytes_read;
 
 	while ((bytes_read = getline(&line, &linecap, f)) != -1)
-		editor_append_line(line, (size_t)bytes_read);
+		editor_append_line(line, (uint)bytes_read);
 
 	if (line) free(line);
 	fclose(f);
