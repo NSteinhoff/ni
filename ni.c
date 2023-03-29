@@ -15,6 +15,7 @@
 /// - syntax highlighting
 /// - multiple buffers & load file
 /// - setting options
+/// - terminal resize
 #define STR(A) #A
 #define PERROR_(F, L, S)                                                       \
 	do {                                                                   \
@@ -184,26 +185,30 @@ static void enable_raw_mode(void) {
 }
 
 static int read_escape_sequence(void) {
+	enable_immediate_mode();
+	EditorKey key = KEY_ESCAPE;
 	char seq[3];
 
-	if (!READ(seq[0])) return KEY_ESCAPE;
-	if (!READ(seq[1])) return KEY_ESCAPE;
-	if (seq[0] != '[') return KEY_ESCAPE;
+	if (!READ(seq[0])) goto outro;
+	if (!READ(seq[1])) goto outro;
+	if (seq[0] != '[') goto outro;
 
 	switch (seq[1]) {
-	case 'A': return KEY_UP;
-	case 'B': return KEY_DOWN;
-	case 'D': return KEY_LEFT;
-	case 'C': return KEY_RIGHT;
+	case 'A': key = KEY_UP; goto outro;
+	case 'B': key = KEY_DOWN; goto outro;
+	case 'D': key = KEY_LEFT; goto outro;
+	case 'C': key = KEY_RIGHT; goto outro;
 	}
 
 	if (isnumber(seq[1]) && READ(seq[2]) && seq[2] == '~') switch (seq[1]) {
-		case '3': return KEY_DELETE;
-		case '5': return KEY_PAGE_UP;
-		case '6': return KEY_PAGE_DOWN;
+		case '3': key = KEY_DELETE; goto outro;
+		case '5': key = KEY_PAGE_UP; goto outro;
+		case '6': key = KEY_PAGE_DOWN; goto outro;
 		}
 
-	return KEY_ESCAPE;
+outro:
+	enable_block_mode();
+	return (int)key;
 }
 
 static int read_key(void) {
@@ -213,12 +218,7 @@ static int read_key(void) {
 	case 13: return KEY_RETURN;
 	case 8:
 	case 127: return KEY_DELETE;
-	case '\x1b': {
-		enable_immediate_mode();
-		int e = read_escape_sequence();
-		enable_block_mode();
-		return e;
-	}
+	case '\x1b': return read_escape_sequence();
 	default: return c;
 	}
 }
