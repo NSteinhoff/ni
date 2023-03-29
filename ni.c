@@ -16,21 +16,6 @@
 /// - multiple buffers & load file
 /// - setting options
 /// - terminal resize
-#define STR(A) #A
-#define PERROR_(F, L, S)                                                       \
-	do {                                                                   \
-		if (errno >= 0 && errno < sys_nerr)                            \
-			perror(F ":" STR(L) " " S);                            \
-		else printf("%s:%d %s\n", F, L, S);                            \
-	} while (0)
-#define PERROR(S) PERROR_(__FILE__, __LINE__, S)
-#define DIE(S)                                                                 \
-	do {                                                                   \
-		write(STDOUT_FILENO, "\x1b[2J", 4);                            \
-		write(STDOUT_FILENO, "\x1b[H", 3);                             \
-		PERROR(S);                                                     \
-		exit(EXIT_FAILURE);                                            \
-	} while (0)
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>
@@ -44,6 +29,14 @@
 
 // --------------------------------- Defines ----------------------------------
 #define NI_VERSION "0.0.1"
+#define STR(A) #A
+#define PERROR_(F, L, S)                                                       \
+	do {                                                                   \
+		if (errno >= 0 && errno < sys_nerr)                            \
+			perror(F ":" STR(L) " " S);                            \
+		else printf("%s:%d %s\n", F, L, S);                            \
+	} while (0)
+#define PERROR(S) PERROR_(__FILE__, __LINE__, S)
 #define MAX_RENDER 1024
 #define NORETURN __attribute__((noreturn)) void
 #define NI_TABSTOP 8
@@ -51,6 +44,18 @@
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 #define READ(C) (read(STDIN_FILENO, &(C), 1) == 1)
+#define SEND_ESCAPE(C) (write(STDOUT_FILENO, (C), sizeof(C)) == sizeof(C))
+#define RESET_TERM                                                             \
+	do {                                                                   \
+		SEND_ESCAPE("\x1b[2J");                                        \
+		SEND_ESCAPE("\x1b[H");                                         \
+	} while (0)
+#define DIE(S)                                                                 \
+	do {                                                                   \
+		RESET_TERM;                                                    \
+		PERROR(S);                                                     \
+		exit(EXIT_FAILURE);                                            \
+	} while (0)
 
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
@@ -143,8 +148,7 @@ static Mode modes[MODE_COUNT] = {
 
 // -------------------------------- Terminal ----------------------------------
 static NORETURN quit(int code) {
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	RESET_TERM;
 	exit(code);
 }
 
@@ -225,7 +229,7 @@ static int read_key(void) {
 
 static int get_cursor_position(uint *rows, uint *cols) {
 	// Solicit device report
-	if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
+	if (!SEND_ESCAPE("\x1b[6n")) return -1;
 
 	// Read device report: \x1b[<rows>;<cols>R
 	char buf[32];
@@ -244,9 +248,9 @@ static int get_cursor_position(uint *rows, uint *cols) {
 
 static int get_window_size(uint *rows, uint *cols) {
 	// Reset cursor to home
-	if (write(STDOUT_FILENO, "\x1b[H", 3) != 3) return -1;
+	if (!SEND_ESCAPE("\x1b[H")) return -1;
 	// Move to end
-	if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
+	if (!SEND_ESCAPE("\x1b[999C\x1b[999B")) return -1;
 	if (get_cursor_position(rows, cols) == -1) return -1;
 
 	return 0;
