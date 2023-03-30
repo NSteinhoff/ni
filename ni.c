@@ -30,7 +30,25 @@
 
 // --------------------------------- Defines ----------------------------------
 #define NI_VERSION "0.0.1"
+
+#define NORETURN __attribute__((noreturn)) void
+
+#define MAX_SCREEN_BUFFER_LEN 1 << 16
+#define MAX_RENDER 1024
+#define TABSTOP 8
+#define NUM_UTIL_LINES 2
+
+// Mask 00011111 i.e. zero out the upper three bits
+#define CTRL_KEY(k) ((k)&0x1f)
+
+// Input / output
+#define READ(C) (read(STDIN_FILENO, &(C), 1) == 1)
+#define SEND_ESCAPE(C)                                                         \
+	(write(STDOUT_FILENO, (C), sizeof(C) - 1) == sizeof(C) - 1)
+
+// Error handling / Debugging
 #define STR(A) #A
+
 #define PERROR_(F, L, S)                                                       \
 	do {                                                                   \
 		if (errno >= 0 && errno < sys_nerr)                            \
@@ -38,23 +56,10 @@
 		else printf("%s:%d %s\n", F, L, S);                            \
 	} while (0)
 #define PERROR(S) PERROR_(__FILE__, __LINE__, S)
-#define MAX_SCREEN_BUFFER_LEN 1 << 16
-#define MAX_RENDER 1024
-#define NORETURN __attribute__((noreturn)) void
-#define NI_TABSTOP 8
-#define NUM_UTIL_LINES 2
-// Mask 00011111 i.e. zero out the upper three bits
-#define CTRL_KEY(k) ((k)&0x1f)
-#define READ(C) (read(STDIN_FILENO, &(C), 1) == 1)
-#define SEND_ESCAPE(C) (write(STDOUT_FILENO, (C), sizeof(C)) == sizeof(C))
-#define RESET_TERM                                                             \
-	do {                                                                   \
-		SEND_ESCAPE("\x1b[2J");                                        \
-		SEND_ESCAPE("\x1b[H");                                         \
-	} while (0)
+
 #define DIE(S)                                                                 \
 	do {                                                                   \
-		RESET_TERM;                                                    \
+		clear_screen();                                                \
 		PERROR(S);                                                     \
 		exit(EXIT_FAILURE);                                            \
 	} while (0)
@@ -157,8 +162,13 @@ static Mode modes[MODE_COUNT] = {
 };
 
 // -------------------------------- Terminal ----------------------------------
+static void clear_screen(void) {
+	SEND_ESCAPE("\x1b[2J");
+	SEND_ESCAPE("\x1b[H");
+}
+
 static NORETURN quit(int code) {
-	RESET_TERM;
+	clear_screen();
 	exit(code);
 }
 
@@ -373,6 +383,26 @@ static void line_delete_char(Line *line, uint at) {
 }
 
 // ---------------------------------- Input -----------------------------------
+static void cursor_move(int c) {
+	switch (c) {
+	case 'k':
+	case KEY_UP: E.cy > 0 && E.cy--; break;
+	case 'j':
+	case KEY_DOWN:
+		if (E.numlines != 0 && E.cy < E.numlines - 1) E.cy++;
+		break;
+	case 'h':
+	case KEY_LEFT: E.cx > 0 && E.cx--; break;
+	case 'l':
+	case KEY_RIGHT:
+		if (E.numlines != 0 && E.cx < E.lines[E.cy].len - 1) E.cx++;
+		break;
+	default: return;
+	}
+
+	if (E.numlines == 0 || E.lines[E.cy].len == 0) E.cx = 0;
+	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+}
 static void cursor_normalize(void) {
 	if (E.numlines == 0) {
 		E.cy = 0;
@@ -385,27 +415,6 @@ static void cursor_normalize(void) {
 
 	if (E.cy > max_y) E.cy = max_y;
 	if (E.cx > max_x) E.cx = max_x;
-}
-
-static void cursor_move(Direction direction) {
-	switch (direction) {
-	case DIRECTION_UP:
-		if (E.cy > 0) E.cy--;
-		break;
-	case DIRECTION_DOWN:
-		if (E.numlines > 0 && E.cy < E.numlines - 1) E.cy++;
-		break;
-	case DIRECTION_LEFT:
-		if (E.numlines > 0 && E.cx > 0) E.cx--;
-		break;
-	case DIRECTION_RIGHT:
-		if (E.numlines > 0 && E.cy < E.numlines &&
-		    E.lines[E.cy].len > 0 && E.cx < E.lines[E.cy].len - 1)
-			E.cx++;
-		break;
-	}
-
-	cursor_normalize();
 }
 
 static void process_key_normal(const int c) {
@@ -443,11 +452,10 @@ static void process_key_normal(const int c) {
 
 	// Jump half-screen up/down
 	case CTRL_KEY('d'):
-		for (uint n = E.rows / 2; n > 0; n--)
-			cursor_move(DIRECTION_DOWN);
+		for (uint n = E.rows / 2; n > 0; n--) cursor_move('j');
 		break;
 	case CTRL_KEY('u'):
-		for (uint n = E.rows / 2; n > 0; n--) cursor_move(DIRECTION_UP);
+		for (uint n = E.rows / 2; n > 0; n--) cursor_move('k');
 		break;
 
 	// Start/End of line
@@ -541,19 +549,7 @@ static void process_key_normal(const int c) {
 	// Delete single character
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
 
-	case 'k':
-	case KEY_UP: cursor_move(DIRECTION_UP); break;
-
-	case 'j':
-	case KEY_DOWN: cursor_move(DIRECTION_DOWN); break;
-
-	case 'h':
-	case KEY_LEFT: cursor_move(DIRECTION_LEFT); break;
-
-	case 'l':
-	case KEY_RIGHT: cursor_move(DIRECTION_RIGHT); break;
-
-	default: break;
+	default: cursor_move(c);
 	}
 }
 
@@ -614,7 +610,7 @@ static uint cx2rx(uint cx, Line *line) {
 	uint rx = 0;
 
 	for (uint i = 0; i < cx; i++) {
-		if (chars[i] == '\t') rx += NI_TABSTOP - (rx % NI_TABSTOP);
+		if (chars[i] == '\t') rx += TABSTOP - (rx % TABSTOP);
 		else rx++;
 	}
 
@@ -739,7 +735,7 @@ static uint render(const Line *line, char *dst, size_t size) {
 	for (uint i = 0; i < len && i < size - 1; i++)
 		if (chars[i] == '\t') {
 			dst[rlen++] = rendertab[0];
-			while (rlen % NI_TABSTOP) dst[rlen++] = rendertab[1];
+			while (rlen % TABSTOP) dst[rlen++] = rendertab[1];
 		} else dst[rlen++] = chars[i];
 	dst[rlen] = '\0';
 
@@ -764,11 +760,10 @@ static void draw_lines(ScreenBuffer *screen) {
 			Line *line = &E.lines[idx];
 
 			uint rlen = render(line, render_buffer,
-					     sizeof(render_buffer));
+					   sizeof(render_buffer));
 
-			uint len = rlen - E.coloff <= E.cols
-					 ? (rlen - E.coloff)
-					 : E.cols;
+			uint len = rlen - E.coloff <= E.cols ? (rlen - E.coloff)
+							     : E.cols;
 			screen_append(screen, render_buffer + E.coloff, len);
 		}
 
