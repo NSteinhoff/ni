@@ -431,12 +431,25 @@ static void cursor_normalize(void) {
 	if (E.cx > max_x) E.cx = max_x;
 }
 
+static void show_file_info(void) {
+	if (E.numlines > 0)
+		format_message("\"%s\" %d lines, --%.0f%%--",
+			       E.filename ? E.filename : "[NO NAME]",
+			       E.numlines,
+			       ((double)E.cy + 1) / (double)E.numlines * 100);
+	else
+		format_message("\"%s\" --No lines in buffer--",
+			       E.filename ? E.filename : "[NO NAME]");
+}
+
 static void process_key_normal(const int c) {
 	switch (c) {
 	case 'q': quit(EXIT_SUCCESS);
 	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
 	case CTRL_KEY('x'): editor_save(); quit(EXIT_SUCCESS);
+
+	case CTRL_KEY('g'): show_file_info(); break;
 
 	// Enter INSERT mode
 	case 'i':
