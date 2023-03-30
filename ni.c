@@ -5,17 +5,19 @@
 /// external libraries.
 ///
 /// TODO:
-/// - messages
+/// - dirty indicator
+/// - command line prompt
+/// - searching
+/// - incremental search
+/// - debug layer
+/// - saveas
 /// - static memory allocation
 /// - key chords
 /// - undo / redo
-/// - searching
-/// - incremental search
-/// - command line
-/// - syntax highlighting
-/// - setting options
-/// - suspend & resume
-/// - multiple buffers & load file
+/// - syntax highlighting (?)
+/// - setting options (?)
+/// - suspend & resume (?)
+/// - multiple buffers & load file (?)
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>   // isnumber, isblank, isprint, isspace
@@ -70,13 +72,6 @@
 typedef unsigned int uint;
 typedef struct termios Term;
 
-typedef enum Direction {
-	DIRECTION_UP,
-	DIRECTION_DOWN,
-	DIRECTION_LEFT,
-	DIRECTION_RIGHT,
-} Direction;
-
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
@@ -126,6 +121,14 @@ typedef struct Editor {
 	// Buffer containing the last status message which is displayed at the
 	// bottom.
 	MessageBuffer message;
+	// Screen i.e draw buffer. The output is written to this buffer so that
+	// it can be send to the screen in a single call to avoid flickering.
+	ScreenBuffer screen;
+	char rendertab[2];
+	// Renders individual lines before printing them to the screen.
+	// TODO: Do we even need this buffer? Why not render straight to the
+	// screen?
+	char render_buffer[MAX_RENDER];
 } Editor;
 
 typedef struct Mode {
@@ -133,18 +136,7 @@ typedef struct Mode {
 	void (*process_key)(int c);
 } Mode;
 
-// --------------------------------- Buffers ----------------------------------
-// Renders individual lines before printing them to the screen.
-// TODO: Do we even need this buffer? Why not render straight to the screen?
-static char render_buffer[MAX_RENDER];
-
-// Screen i.e draw buffer. The output is written to this buffer so that it can
-// be send to the screen in a single call to avoid flickering.
-static ScreenBuffer screen;
-
 // ------------------------------ State & Data --------------------------------
-static const char rendertab[] = {'>', '-'};
-
 static Editor E;
 
 // ---------------------------------- Modes -----------------------------------
@@ -762,8 +754,8 @@ static uint render(const Line *line, char *dst, size_t size) {
 	uint rlen = 0;
 	for (uint i = 0; i < len && i < size - 1; i++)
 		if (chars[i] == '\t') {
-			dst[rlen++] = rendertab[0];
-			while (rlen % TABSTOP) dst[rlen++] = rendertab[1];
+			dst[rlen++] = E.rendertab[0];
+			while (rlen % TABSTOP) dst[rlen++] = E.rendertab[1];
 		} else dst[rlen++] = chars[i];
 	dst[rlen] = '\0';
 
@@ -787,12 +779,12 @@ static void draw_lines(ScreenBuffer *screen) {
 		} else if (E.coloff < E.lines[idx].len) {
 			Line *line = &E.lines[idx];
 
-			uint rlen = render(line, render_buffer,
-					   sizeof(render_buffer));
+			uint rlen = render(line, E.render_buffer,
+					   sizeof(E.render_buffer));
 
 			uint len = rlen - E.coloff <= E.cols ? (rlen - E.coloff)
 							     : E.cols;
-			screen_append(screen, render_buffer + E.coloff, len);
+			screen_append(screen, E.render_buffer + E.coloff, len);
 		}
 
 		if (clear) screen_append(screen, "\x1b[K", 3);
@@ -810,16 +802,16 @@ static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 }
 
 static void refresh_screen(void) {
-	screen.len = 0;
+	E.screen.len = 0;
 	editor_scroll();
-	screen_append(&screen, "\x1b[?25l", 6); // hide cursor
+	screen_append(&E.screen, "\x1b[?25l", 6); // hide cursor
 
-	place_cursor(&screen, 0, 0);
-	draw_lines(&screen);
-	place_cursor(&screen, E.rx - E.coloff, E.cy - E.rowoff);
+	place_cursor(&E.screen, 0, 0);
+	draw_lines(&E.screen);
+	place_cursor(&E.screen, E.rx - E.coloff, E.cy - E.rowoff);
 
-	screen_append(&screen, "\x1b[?25h", 6); // show cursor
-	write(STDOUT_FILENO, screen.data, screen.len);
+	screen_append(&E.screen, "\x1b[?25h", 6); // show cursor
+	write(STDOUT_FILENO, E.screen.data, E.screen.len);
 }
 
 // -------------------------------- File I/O ----------------------------------
@@ -881,8 +873,7 @@ static void editor_save(void) {
 // ---------------------------------- Main ------------------------------------
 static void handle_resize(int sig) {
 	(void)sig;
-	if (get_window_size(&E.rows, &E.cols) == -1)
-		DIE("get_window_size in handle_resize");
+	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 	refresh_screen();
 }
 
@@ -894,6 +885,10 @@ static void editor_init(void) {
 	E.numlines = 0;
 	E.rowoff = E.coloff = 0;
 	E.cx = E.cy = E.rx = 0;
+	E.rendertab[0] = '>';
+	E.rendertab[1] = '-';
+	E.message.len = 0;
+
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
 
