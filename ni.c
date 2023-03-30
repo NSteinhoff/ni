@@ -726,6 +726,7 @@ static int draw_status(ScreenBuffer *screen) {
 	const int padding = (max_len - total_len) / (n_parts - 1);
 	int remaining = max_len;
 
+	screen_append(screen, "\x1b[7m", 4);
 	for (int i = 0; i < n_parts; i++) {
 		const char *part = parts[i].s;
 		const uint len = (uint)parts[i].len;
@@ -740,6 +741,7 @@ static int draw_status(ScreenBuffer *screen) {
 		}
 		screen_append(screen, part, len);
 	}
+	screen_append(screen, "\x1b[0m", 4);
 
 	return 0;
 }
