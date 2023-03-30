@@ -5,10 +5,10 @@
 /// external libraries.
 ///
 /// TODO:
+/// - messages
 /// - static memory allocation
 /// - key chords
 /// - undo / redo
-/// - messages
 /// - searching
 /// - incremental search
 /// - command line
@@ -21,6 +21,7 @@
 #include <ctype.h>   // isnumber, isblank, isprint, isspace
 #include <errno.h>   // errno
 #include <signal.h>  // signal, SIGWINCH
+#include <stdarg.h>  // va_list, va_start, va_end
 #include <stdbool.h> // bool, true, false
 #include <stdio.h>   // fopen, fclose, perror, sys_nerr
 #include <stdlib.h>  // realloc, free, exit, atexit
@@ -33,8 +34,9 @@
 
 #define NORETURN __attribute__((noreturn)) void
 
-#define MAX_SCREEN_BUFFER_LEN 1 << 16
+#define MAX_SCREEN_LEN 1 << 16
 #define MAX_RENDER 1024
+#define MAX_MESSAGE_LEN 256
 #define TABSTOP 8
 #define NUM_UTIL_LINES 2
 
@@ -95,17 +97,15 @@ typedef enum EditorKey {
 	KEY_NOOP,
 } EditorKey;
 
-typedef enum EditorMsg {
-	MSG_NOMSG,
-	MSG_SAVED,
-	MSG_LOADED,
-	MSG_COUNT,
-} EditorMsg;
-
 typedef struct ScreenBuffer {
-	char data[MAX_SCREEN_BUFFER_LEN];
+	char data[MAX_SCREEN_LEN];
 	size_t len;
 } ScreenBuffer;
+
+typedef struct MessageBuffer {
+	char data[MAX_MESSAGE_LEN];
+	size_t len;
+} MessageBuffer;
 
 typedef struct Line {
 	uint len;
@@ -123,7 +123,9 @@ typedef struct Editor {
 	uint rowoff, coloff;
 	uint rows, cols;
 	EditorMode mode;
-	EditorMsg msg;
+	// Buffer containing the last status message which is displayed at the
+	// bottom.
+	MessageBuffer message;
 } Editor;
 
 typedef struct Mode {
@@ -132,20 +134,16 @@ typedef struct Mode {
 } Mode;
 
 // --------------------------------- Buffers ----------------------------------
-static char render_buffer[MAX_RENDER]; // renders individual lines before
-				       // printing them to the screen.  TODO: Do
-				       // we even need this buffer? Why not
-				       // render straight to the screen?
+// Renders individual lines before printing them to the screen.
+// TODO: Do we even need this buffer? Why not render straight to the screen?
+static char render_buffer[MAX_RENDER];
+
+// Screen i.e draw buffer. The output is written to this buffer so that it can
+// be send to the screen in a single call to avoid flickering.
 static ScreenBuffer screen;
 
 // ------------------------------ State & Data --------------------------------
 static const char rendertab[] = {'>', '-'};
-
-static const char *messages[MSG_COUNT] = {
-	[MSG_NOMSG] = NULL,
-	[MSG_SAVED] = "Saved",
-	[MSG_LOADED] = "File loaded",
-};
 
 static Editor E;
 
@@ -381,6 +379,22 @@ static void line_delete_char(Line *line, uint at) {
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
 }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+static void format_message(const char *restrict format, ...) {
+	size_t size = MAX_MESSAGE_LEN;
+
+	va_list ap;
+	va_start(ap, format);
+
+	int len = vsnprintf(E.message.data, size, format, ap);
+	if (len < 0) DIE("snprintf loaded file");
+	E.message.len = (size_t)len >= size ? size - 1 : (size_t)len;
+
+	va_end(ap);
+}
+#pragma clang diagnostic pop
 
 // ---------------------------------- Input -----------------------------------
 static void cursor_move(int c) {
@@ -628,7 +642,7 @@ static void editor_scroll(void) {
 
 // --------------------------------- Output -----------------------------------
 static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
-	if (screen->len + len > MAX_SCREEN_BUFFER_LEN) return -1;
+	if (screen->len + len > MAX_SCREEN_LEN) return -1;
 
 	memcpy(&screen->data[screen->len], s, len);
 	screen->len += len;
@@ -718,13 +732,11 @@ static int draw_status(ScreenBuffer *screen) {
 }
 
 static int draw_message(ScreenBuffer *screen) {
-	if (E.msg == MSG_NOMSG) return 0;
+	if (E.message.len == 0) return 0;
 
-	char message[256];
-	int len = snprintf(message, E.cols, "%s", messages[E.msg]);
-	if (len < 0) return -1;
+	size_t len = (size_t)(E.message.len > E.cols ? E.cols : E.message.len);
 
-	return screen_append(screen, message, (size_t)len);
+	return screen_append(screen, E.message.data, len);
 }
 
 static uint render(const Line *line, char *dst, size_t size) {
@@ -830,7 +842,8 @@ static void editor_open(const char *restrict fname) {
 	fclose(f);
 	if (E.filename) free(E.filename);
 	E.filename = strdup(fname);
-	E.msg = MSG_LOADED;
+
+	format_message("Loaded: \"%s\"", fname);
 }
 
 static void editor_save(void) {
@@ -844,7 +857,8 @@ static void editor_save(void) {
 		fputs("\n", f);
 	}
 
-	E.msg = MSG_SAVED;
+	format_message("Saved: \"%s\"", E.filename);
+
 	fclose(f);
 }
 
@@ -857,7 +871,6 @@ static void handle_resize(int sig) {
 }
 
 static void editor_init(void) {
-	E.msg = MSG_NOMSG;
 	E.mode = MODE_NORMAL;
 	E.chord = '\0';
 	E.lines = NULL;
