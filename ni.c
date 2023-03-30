@@ -789,13 +789,13 @@ static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 static void refresh_screen(void) {
 	screen.len = 0;
 	editor_scroll();
-	screen_append(&screen, "\x1b[?25l", 4); // hide cursor
+	screen_append(&screen, "\x1b[?25l", 6); // hide cursor
 
 	place_cursor(&screen, 0, 0);
 	draw_lines(&screen);
 	place_cursor(&screen, E.rx - E.coloff, E.cy - E.rowoff);
 
-	screen_append(&screen, "\x1b[?25h", 4); // show cursor
+	screen_append(&screen, "\x1b[?25h", 6); // show cursor
 	write(STDOUT_FILENO, screen.data, screen.len);
 }
 
