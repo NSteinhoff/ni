@@ -3,22 +3,6 @@
 ///
 /// ni is a minimalist modal text editor written in plain C without using
 /// external libraries.
-///
-/// TODO:
-/// - dirty indicator
-/// - delete + motion
-/// - command line prompt
-/// - searching
-/// - incremental search
-/// - debug layer
-/// - saveas
-/// - static memory allocation
-/// - key chords
-/// - undo / redo
-/// - syntax highlighting (?)
-/// - setting options (?)
-/// - suspend & resume (?)
-/// - multiple buffers & load file (?)
 
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>   // isnumber, isblank, isprint, isspace
@@ -111,6 +95,7 @@ typedef struct Line {
 typedef struct Editor {
 	Term term_orig;
 	Term term;
+	bool dirty;
 	char chord;
 	char *filename;
 	Line *lines;
@@ -287,6 +272,8 @@ static void insert_line(size_t at) {
 	E.lines[at].chars = strdup("");
 
 	E.numlines++;
+
+	E.dirty = true;
 }
 
 static void delete_line(uint at) {
@@ -301,6 +288,8 @@ static void delete_line(uint at) {
 			(sizeof *E.lines) * (E.numlines - (at + 1)));
 
 	E.numlines--;
+
+	E.dirty = true;
 }
 
 static void split_line(uint at, uint split_at) {
@@ -319,6 +308,8 @@ static void split_line(uint at, uint split_at) {
 	E.lines[at].len -= len;
 	E.lines[at].chars[E.lines[at].len] = '\0';
 	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len + 1);
+
+	E.dirty = true;
 }
 
 static void join_lines(uint at) {
@@ -345,6 +336,16 @@ static void join_lines(uint at) {
 	}
 
 	delete_line(at + 1);
+
+	E.dirty = true;
+}
+
+static void crop_line(uint at) {
+	if (E.numlines == 0) return;
+
+	E.lines[E.cy].len = at;
+
+	E.dirty = true;
 }
 
 static void line_insert_char(Line *line, uint at, char c) {
@@ -358,6 +359,8 @@ static void line_insert_char(Line *line, uint at, char c) {
 
 	line->chars[at] = c;
 	line->len++;
+
+	E.dirty = true;
 }
 
 static void line_delete_char(Line *line, uint at) {
@@ -371,23 +374,9 @@ static void line_delete_char(Line *line, uint at) {
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
+
+	E.dirty = true;
 }
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
-static void format_message(const char *restrict format, ...) {
-	size_t size = MAX_MESSAGE_LEN;
-
-	va_list ap;
-	va_start(ap, format);
-
-	int len = vsnprintf(E.message.data, size, format, ap);
-	if (len < 0) DIE("snprintf loaded file");
-	E.message.len = (size_t)len >= size ? size - 1 : (size_t)len;
-
-	va_end(ap);
-}
-#pragma clang diagnostic pop
 
 // ---------------------------------- Input -----------------------------------
 static void cursor_move(int c) {
@@ -424,6 +413,7 @@ static void cursor_normalize(void) {
 	if (E.cx > max_x) E.cx = max_x;
 }
 
+static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
 		format_message("\"%s\" %d lines, --%.0f%%--",
@@ -553,10 +543,7 @@ static void process_key_normal(const int c) {
 	// Deleting
 	case 'd': chord('d'); break;
 
-	case 'D':
-		if (E.numlines == 0) break;
-		E.lines[E.cy].len = E.cx--;
-		break;
+	case 'D': crop_line(E.cx--); break;
 
 	// Changing
 	case 'C':
@@ -682,6 +669,22 @@ static void editor_scroll(void) {
 }
 
 // --------------------------------- Output -----------------------------------
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+static void format_message(const char *restrict format, ...) {
+	size_t size = MAX_MESSAGE_LEN;
+
+	va_list ap;
+	va_start(ap, format);
+
+	int len = vsnprintf(E.message.data, size, format, ap);
+	if (len < 0) DIE("snprintf loaded file");
+	E.message.len = (size_t)len >= size ? size - 1 : (size_t)len;
+
+	va_end(ap);
+}
+#pragma clang diagnostic pop
+
 static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
 	if (screen->len + len > MAX_SCREEN_LEN) return -1;
 
@@ -731,8 +734,9 @@ static int draw_status(ScreenBuffer *screen) {
 
 	char filename[128];
 	int filename_len =
-		snprintf(filename, sizeof filename - 1, "%s",
-			 E.filename == NULL ? "[NO NAME]" : E.filename);
+		snprintf(filename, sizeof filename - 1, "%s%s",
+			 E.filename == NULL ? "[NO NAME]" : E.filename,
+			 E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
 
@@ -901,9 +905,10 @@ static void editor_save(void) {
 		fputs("\n", f);
 	}
 
-	format_message("Saved: \"%s\"", E.filename);
-
 	fclose(f);
+
+	format_message("Saved: \"%s\"", E.filename);
+	E.dirty = false;
 }
 
 // ---------------------------------- Main ------------------------------------
@@ -924,6 +929,7 @@ static void editor_init(void) {
 	E.rendertab[0] = '>';
 	E.rendertab[1] = '-';
 	E.message.len = 0;
+	E.dirty = false;
 
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
