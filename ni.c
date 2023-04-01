@@ -6,6 +6,7 @@
 ///
 /// TODO:
 /// - dirty indicator
+/// - delete + motion
 /// - command line prompt
 /// - searching
 /// - incremental search
@@ -434,12 +435,17 @@ static void show_file_info(void) {
 			       E.filename ? E.filename : "[NO NAME]");
 }
 
+static void chord(const char c) {
+	E.mode = MODE_CHORD;
+	E.chord = c;
+}
+
 static void process_key_normal(const int c) {
 	switch (c) {
+	case 'Z': chord('Z'); break;
 	case 'q': quit(EXIT_SUCCESS);
 	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
-	case CTRL_KEY('x'): editor_save(); quit(EXIT_SUCCESS);
 
 	case CTRL_KEY('g'): show_file_info(); break;
 
@@ -525,10 +531,7 @@ static void process_key_normal(const int c) {
 		break;
 
 	// File start and end
-	case 'g':
-		E.mode = MODE_CHORD;
-		E.chord = 'g';
-		break;
+	case 'g': chord('g'); break;
 	case 'G': E.cy = E.numlines - 1; break;
 
 	// Inserting lines
@@ -548,10 +551,7 @@ static void process_key_normal(const int c) {
 	case 'J': join_lines(E.cy); break;
 
 	// Deleting
-	case 'd':
-		E.mode = MODE_CHORD;
-		E.chord = 'd';
-		break;
+	case 'd': chord('d'); break;
 
 	case 'D':
 		if (E.numlines == 0) break;
@@ -567,6 +567,10 @@ static void process_key_normal(const int c) {
 
 	// Delete single character
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
+
+	// Search in line
+	case 'f': chord('f'); break;
+	case 'F': chord('F'); break;
 
 	default: cursor_move(c);
 	}
@@ -600,9 +604,25 @@ static void process_key_insert(const int c) {
 
 static void process_key_chord(const int c) {
 	switch (E.chord) {
+	case 'Z':
+		switch (c) {
+		case 'Z': editor_save(); quit(EXIT_SUCCESS);
+		case 'Q': quit(EXIT_SUCCESS);
+		}
+
 	case 'g':
 		switch (c) {
 		case 'g': E.cy = 0; break;
+		case 'e':
+			if (E.cx == 0) break;
+			// Consume word till the beginning
+			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx--;
+
+			// Consume whitespace to the left
+			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx--;
+			break;
 		}
 		break;
 
@@ -611,6 +631,22 @@ static void process_key_chord(const int c) {
 		case 'd': delete_line(E.cy); break;
 		}
 		break;
+
+	case 'f':
+	case 'F': {
+		uint x = E.cx;
+		while (x < E.lines[E.cy].len) {
+			if (E.lines[E.cy].chars[x] == c) {
+				E.cx = x;
+				break;
+			}
+			switch (E.chord) {
+			case 'f': x++; break;
+			case 'F': x--; break;
+			}
+		}
+		break;
+	}
 	}
 
 	E.chord = '\0';
@@ -695,7 +731,7 @@ static int draw_status(ScreenBuffer *screen) {
 
 	char filename[128];
 	int filename_len =
-		snprintf(filename, sizeof filename - 1, " %s",
+		snprintf(filename, sizeof filename - 1, "%s",
 			 E.filename == NULL ? "[NO NAME]" : E.filename);
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
