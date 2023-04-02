@@ -1,9 +1,3 @@
-/// NI
-/// ====
-///
-/// ni is a minimalist modal text editor written in plain C without using
-/// external libraries.
-
 // -------------------------------- Includes ----------------------------------
 #include <ctype.h>   // isnumber, isblank, isprint, isspace
 #include <errno.h>   // errno
@@ -92,28 +86,47 @@ typedef struct Line {
 } Line;
 
 typedef struct Editor {
+	// Terminal
 	Term term_orig;
 	Term term;
-	bool dirty;
-	char chord;
-	char *filename;
+
+	// Lines
 	Line *lines;
 	uint numlines;
+
+	// Cursor
 	uint cx, cy, rx;
+
+	// Viewport
 	uint rowoff, coloff;
 	uint rows, cols;
+
+	// Mode
 	EditorMode mode;
-	// Buffer containing the last status message which is displayed at the
-	// bottom.
+
+	// File
+	char *filename;
+	bool dirty;
+
+	// Input
+	char chord;
+	char find_char;
+	bool find_forward;
+
+	// Status & Messages
 	MessageBuffer message;
+
+	// Rendering
 	// Screen i.e draw buffer. The output is written to this buffer so that
 	// it can be send to the screen in a single call to avoid flickering.
 	ScreenBuffer screen;
-	char rendertab[2];
 	// Renders individual lines before printing them to the screen.
 	// TODO: Do we even need this buffer? Why not render straight to the
 	// screen?
 	char render_buffer[MAX_RENDER];
+
+	// Settings
+	char render_tab_characters[2];
 } Editor;
 
 typedef struct Mode {
@@ -409,6 +422,21 @@ static void cursor_normalize(void) {
 	if (E.cx > max_x) E.cx = max_x;
 }
 
+static void find_char_in_line(bool forward) {
+	uint x = E.cx;
+	if (forward) x++;
+	else x--;
+
+	while (x < E.lines[E.cy].len) {
+		if (E.lines[E.cy].chars[x] == E.find_char) {
+			E.cx = x;
+			break;
+		}
+		if (forward) x++;
+		else x--;
+	}
+}
+
 static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
@@ -550,6 +578,8 @@ static void process_key_normal(const int c) {
 	// Search in line
 	case 'f': chord('f'); break;
 	case 'F': chord('F'); break;
+	case ';': find_char_in_line(E.find_forward); break;
+	case ',': find_char_in_line(!E.find_forward); break;
 
 	default: cursor_move(c);
 	}
@@ -611,16 +641,10 @@ static void process_key_chord(const int c) {
 
 	case 'f':
 	case 'F': {
-		uint x = E.cx;
-		while (x < E.lines[E.cy].len) {
-			if (E.lines[E.cy].chars[x] == c) {
-				E.cx = x;
-				break;
-			}
-			switch (E.chord) {
-			case 'f': x++; break;
-			case 'F': x--; break;
-			}
+		if (isprint(c) || isblank(c)) {
+			E.find_forward = E.chord == 'f';
+			E.find_char = (char)c;
+			find_char_in_line(E.find_forward);
 		}
 		break;
 	}
@@ -775,8 +799,8 @@ static uint render(const Line *line, char *dst, size_t size) {
 	uint length = 0;
 	for (uint i = 0; i < line->len && i < size - 1; i++)
 		if (line->chars[i] == '\t') {
-			dst[length++] = E.rendertab[0];
-			while (length % TABSTOP) dst[length++] = E.rendertab[1];
+			dst[length++] = E.render_tab_characters[0];
+			while (length % TABSTOP) dst[length++] = E.render_tab_characters[1];
 		} else dst[length++] = line->chars[i];
 	dst[length] = '\0';
 
@@ -906,8 +930,8 @@ static void editor_init(void) {
 	E.numlines = 0;
 	E.rowoff = E.coloff = 0;
 	E.cx = E.cy = E.rx = 0;
-	E.rendertab[0] = '>';
-	E.rendertab[1] = '-';
+	E.render_tab_characters[0] = '>';
+	E.render_tab_characters[1] = '-';
 	E.message.len = 0;
 	E.dirty = false;
 
