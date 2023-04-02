@@ -983,6 +983,20 @@ static void editor_init(void) {
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
 
+static struct timespec elapsed_time(const struct timespec *start, const struct timespec *end) {
+	struct timespec elapsed;
+
+	elapsed.tv_sec = end->tv_sec - start->tv_sec;
+	elapsed.tv_nsec = end->tv_nsec - start->tv_nsec;
+
+	if (elapsed.tv_nsec < 0) {
+		elapsed.tv_nsec += 1000000000;
+		elapsed.tv_sec--;
+	}
+
+	return elapsed;
+}
+
 int main(int argc, char *argv[]) {
 	signal(SIGWINCH, handle_resize);
 	enable_raw_mode();
@@ -994,10 +1008,7 @@ int main(int argc, char *argv[]) {
 
 	while (true) {
 		render_done = refresh_screen(&duration);
-
-		duration.tv_sec = render_done.tv_sec - input_received.tv_sec;
-		duration.tv_nsec = render_done.tv_nsec - input_received.tv_nsec;
-
+		duration = elapsed_time(&input_received, &render_done);
 		input_received = process_key();
 	}
 }

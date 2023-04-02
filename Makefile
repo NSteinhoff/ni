@@ -1,7 +1,7 @@
 CC     := clang
 CFLAGS := -std=c17 -g -Werror -Wall -Wextra -Weverything -pedantic
 CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded -Wno-unsafe-buffer-usage
-MAX_LINES := 1024
+MAX_LINES := 1000
 
 ni: ni.c
 	@grep -hv -e '^$$' -e '^//' ni.c | wc -l | (read n _; \
