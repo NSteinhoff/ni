@@ -386,7 +386,7 @@ static void line_insert_char(Line *line, uint at, char c) {
 	E.dirty = true;
 }
 
-static void line_delete_char(Line *line, uint at) {
+static void delete_char(uint at, Line *line) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
@@ -436,21 +436,6 @@ static void cursor_normalize(void) {
 	if (E.cx > max_x) E.cx = max_x;
 }
 
-static void find_char_in_line(bool forward) {
-	uint x = E.cx;
-	if (forward) x++;
-	else x--;
-
-	while (x < E.lines[E.cy].len) {
-		if (E.lines[E.cy].chars[x] == E.find_char) {
-			E.cx = x;
-			break;
-		}
-		if (forward) x++;
-		else x--;
-	}
-}
-
 static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
@@ -463,6 +448,87 @@ static void show_file_info(void) {
 		               E.filename ? E.filename : "[NO NAME]");
 }
 
+static uint find_word(uint x, const Line *line) {
+	if (x >= line->len - 1) return x;
+
+	// Consume current word
+	while (x < line->len - 1 && !isspace(line->chars[x])) x++;
+
+	// Consume whitespaces
+	while (x < line->len - 1 && isspace(line->chars[x])) x++;
+
+	return x;
+}
+
+static uint find_end(uint x, const Line *line) {
+	if (x >= line->len - 1) return x;
+
+	// Consume whitespace to the right
+	if (isspace(line->chars[x + 1]))
+		while (x < line->len - 1 && isspace(line->chars[x + 1])) x++;
+
+	// Consume word till the end
+	while (x < line->len - 1 && !isspace(line->chars[x + 1])) x++;
+
+	return x;
+}
+
+static uint find_word_backwards(uint x, const Line *line) {
+	if (x == 0) return x;
+
+	if (isspace(line->chars[x - 1]))
+		while (x > 0 && isspace(line->chars[x - 1])) x--;
+
+	// Consume word till the beginning
+	while (x > 0 && !isspace(line->chars[x - 1])) x--;
+
+	return x;
+}
+
+static uint find_end_backwards(uint x, const Line *line) {
+	if (x == 0) return x;
+
+	// Consume word till the beginning
+	while (x > 0 && !isspace(line->chars[x])) x--;
+
+	// Consume whitespace to the left
+	while (x > 0 && isspace(line->chars[x])) x--;
+
+	return x;
+}
+
+static uint find_char_in_line(uint x, const Line *line, char c, bool forward) {
+	uint xx = x;
+	if (forward) xx++;
+	else xx--;
+
+	while (xx < line->len) {
+		if (line->chars[xx] == c) return xx;
+		if (forward) xx++;
+		else xx--;
+	}
+
+	return x;
+}
+
+static uint repeat_find(uint x, const Line *line, bool same_direction) {
+	bool forward = same_direction ? E.find_forward : !E.find_forward;
+	return find_char_in_line(x, line, E.find_char, forward);
+}
+
+static void enter_insert_mode(char c) {
+	if (!E.numlines) insert_line(0);
+
+	switch (c) {
+	case 'a':
+		if (E.lines[E.cy].len > 0) E.cx++;
+		break;
+	case 'A': E.cx = E.lines[E.cy].len; break;
+	case 'I': E.cx = 0; break;
+	}
+	E.mode = MODE_INSERT;
+}
+
 static void start_chord(const char c) {
 	E.mode = MODE_CHORD;
 	E.chord = c;
@@ -470,28 +536,16 @@ static void start_chord(const char c) {
 
 static void process_key_normal(const int c) {
 	switch (c) {
-	case 'Z': start_chord('Z'); break;
 	case 'q': quit(EXIT_SUCCESS);
 	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
-
 	case CTRL_KEY('g'): show_file_info(); break;
 
 	// Enter INSERT mode
 	case 'i':
 	case 'a':
 	case 'A':
-	case 'I':
-		E.mode = MODE_INSERT;
-		if (!E.numlines) insert_line(0);
-		switch (c) {
-		case 'a':
-			if (E.lines[E.cy].len > 0) E.cx++;
-			break;
-		case 'A': E.cx = E.lines[E.cy].len; break;
-		case 'I': E.cx = 0; break;
-		}
-		break;
+	case 'I': enter_insert_mode((char)c); break;
 
 	// Scrolling
 	case CTRL_KEY('l'): E.coloff++; break;
@@ -518,48 +572,11 @@ static void process_key_normal(const int c) {
 		break;
 
 	// Word wise movement
-	case 'w':
-		if (E.cx >= E.lines[E.cy].len - 1) break;
-
-		// Consume current word
-		while (E.cx < E.lines[E.cy].len - 1 &&
-		       !isspace(E.lines[E.cy].chars[E.cx]))
-			E.cx++;
-		// Consume whitespaces
-		while (E.cx < E.lines[E.cy].len - 1 &&
-		       isspace(E.lines[E.cy].chars[E.cx]))
-			E.cx++;
-		break;
-	case 'e':
-		if (E.cx >= E.lines[E.cy].len - 1) break;
-
-		// Consume whitespace to the right
-		if (isspace(E.lines[E.cy].chars[E.cx + 1]))
-			while (E.cx < E.lines[E.cy].len - 1 &&
-			       isspace(E.lines[E.cy].chars[E.cx + 1]))
-				E.cx++;
-
-		// Consume word till the end
-		while (E.cx < E.lines[E.cy].len - 1 &&
-		       !isspace(E.lines[E.cy].chars[E.cx + 1]))
-			E.cx++;
-		break;
-	case 'b':
-		if (E.cx == 0) break;
-
-		// Consume whitespace to the left
-		if (isspace(E.lines[E.cy].chars[E.cx - 1]))
-			while (E.cx > 0 &&
-			       isspace(E.lines[E.cy].chars[E.cx - 1]))
-				E.cx--;
-
-		// Consume word till the beginning
-		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1]))
-			E.cx--;
-		break;
+	case 'w': E.cx = find_word(E.cx, &E.lines[E.cy]); break;
+	case 'b': E.cx = find_word_backwards(E.cx, &E.lines[E.cy]); break;
+	case 'e': E.cx = find_end(E.cx, &E.lines[E.cy]); break;
 
 	// Jumps
-	case 'g': start_chord('g'); break;
 	case 'G': E.cy = E.numlines - 1; break;
 
 	// Inserting lines
@@ -579,7 +596,6 @@ static void process_key_normal(const int c) {
 	case 'J': join_lines(E.cy); break;
 
 	// Deleting
-	case 'd': start_chord('d'); break;
 	case 'D': crop_line(E.cx--); break;
 
 	// Changing
@@ -590,13 +606,17 @@ static void process_key_normal(const int c) {
 		break;
 
 	// Delete single character
-	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
+	case 'x': delete_char(E.cx, &E.lines[E.cy]); break;
 
 	// Search in line
-	case 'f': start_chord('f'); break;
-	case 'F': start_chord('F'); break;
-	case ';': find_char_in_line(E.find_forward); break;
-	case ',': find_char_in_line(!E.find_forward); break;
+	case ';':
+	case ',': E.cx = repeat_find(E.cx, &E.lines[E.cy], c == ';'); break;
+
+	case 'd':
+	case 'g':
+	case 'f':
+	case 'F':
+	case 'Z': start_chord((char)c); break;
 
 	default: cursor_move(c);
 	}
@@ -612,7 +632,7 @@ static void process_key_insert(const int c) {
 
 	case KEY_DELETE:
 		if (E.cx == 0) break;
-		line_delete_char(&E.lines[E.cy], --E.cx);
+		delete_char(--E.cx, &E.lines[E.cy]);
 		break;
 
 	case KEY_RETURN:
@@ -639,16 +659,7 @@ static void process_key_chord(const int c) {
 	case 'g':
 		switch (c) {
 		case 'g': E.cy = 0; break;
-		case 'e':
-			if (E.cx == 0) break;
-			// Consume word till the beginning
-			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx--;
-
-			// Consume whitespace to the left
-			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx--;
-			break;
+		case 'e': find_end_backwards(E.cx, &E.lines[E.cy]); break;
 		}
 		break;
 
@@ -663,7 +674,8 @@ static void process_key_chord(const int c) {
 		if (isprint(c) || isblank(c)) {
 			E.find_forward = E.chord == 'f';
 			E.find_char = (char)c;
-			find_char_in_line(E.find_forward);
+			E.cx = find_char_in_line(E.cx, &E.lines[E.cy],
+			                         E.find_char, E.find_forward);
 		}
 		break;
 	}

@@ -9,6 +9,7 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 This is a new line at the end
 
 - welcome screen listing keymaps
+- add <count> to keys
 - delete + motion
 - searching
 - incremental search
