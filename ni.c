@@ -797,22 +797,19 @@ static void draw_line(ScreenBuffer *screen, uint index) {
 
 static void draw_lines(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
-		uint y_bottom = E.rows - y;
 		uint line_index = y + E.rowoff;
 
-		switch (y_bottom) {
-		case 2: draw_status(screen); break;
-		case 1: draw_message(screen); break;
-		default:
-			if (line_index < E.numlines) draw_line(screen, line_index);
-			else screen_append(screen, "~", 1);
+		if (E.rows - y == 2) draw_status(screen);
+		else if (E.rows - y == 1) draw_message(screen);
+		else if (line_index < E.numlines) draw_line(screen, line_index);
+		else screen_append(screen, "~", 1);
 
-			if (E.numlines == 0 && y == E.rows / 3)
-				draw_welcome_message(screen);
-		}
+		// TODO: Welcome screen
+		if (E.numlines == 0 && y == E.rows / 3) draw_welcome_message(screen);
 
+		// Close of the line
 		screen_append(screen, "\x1b[K", 3);
-		if (y_bottom > 1) screen_append(screen, "\r\n", 2);
+		if (E.rows - y > 1) screen_append(screen, "\r\n", 2);
 	}
 }
 

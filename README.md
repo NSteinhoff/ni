@@ -25,6 +25,7 @@ not a code golfing exercise. The code strives to be readable and maintainable.
 - setting options (?)
 - suspend & resume (?)
 - multiple buffers & load file (?)
+- line wrapping (?)
 
 ## NOTES
 
