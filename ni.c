@@ -463,14 +463,14 @@ static void show_file_info(void) {
 		               E.filename ? E.filename : "[NO NAME]");
 }
 
-static void chord(const char c) {
+static void start_chord(const char c) {
 	E.mode = MODE_CHORD;
 	E.chord = c;
 }
 
 static void process_key_normal(const int c) {
 	switch (c) {
-	case 'Z': chord('Z'); break;
+	case 'Z': start_chord('Z'); break;
 	case 'q': quit(EXIT_SUCCESS);
 	case CTRL_KEY('q'): quit(EXIT_FAILURE);
 	case CTRL_KEY('s'): editor_save(); break;
@@ -558,8 +558,8 @@ static void process_key_normal(const int c) {
 			E.cx--;
 		break;
 
-	// File start and end
-	case 'g': chord('g'); break;
+	// Jumps
+	case 'g': start_chord('g'); break;
 	case 'G': E.cy = E.numlines - 1; break;
 
 	// Inserting lines
@@ -579,8 +579,7 @@ static void process_key_normal(const int c) {
 	case 'J': join_lines(E.cy); break;
 
 	// Deleting
-	case 'd': chord('d'); break;
-
+	case 'd': start_chord('d'); break;
 	case 'D': crop_line(E.cx--); break;
 
 	// Changing
@@ -594,8 +593,8 @@ static void process_key_normal(const int c) {
 	case 'x': line_delete_char(&E.lines[E.cy], E.cx); break;
 
 	// Search in line
-	case 'f': chord('f'); break;
-	case 'F': chord('F'); break;
+	case 'f': start_chord('f'); break;
+	case 'F': start_chord('F'); break;
 	case ';': find_char_in_line(E.find_forward); break;
 	case ',': find_char_in_line(!E.find_forward); break;
 
@@ -717,7 +716,7 @@ static void format_message(const char *restrict format, ...) {
 	va_start(ap, format);
 
 	int len = vsnprintf(E.message.data, size, format, ap);
-	if (len < 0) DIE("snprintf loaded file");
+	if (len < 0) DIE("format_message");
 	E.message.len = (size_t)len >= size ? size - 1 : (size_t)len;
 
 	va_end(ap);

@@ -8,18 +8,18 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 
 This is a new line at the end
 
-- undo / redo
-- autoindent
 - welcome screen listing keymaps
 - delete + motion
 - searching
 - incremental search
-- command line prompt
-- saveas
+- undo / redo
+- autoindent
+- command line prompt (?)
 - static memory allocation (?)
 - debug layer (?)
 - syntax highlighting (?)
 - setting options (?)
-- suspend & resume (?)
+- saveas (?)
 - multiple buffers & load file (?)
 - line wrapping (?)
+- suspend & resume (?)
