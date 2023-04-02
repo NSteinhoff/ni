@@ -39,18 +39,17 @@
 #define STR(A) #A
 
 #define PERROR_(F, L, S)                                                       \
-	do {                                                                   \
-		if (errno >= 0 && errno < sys_nerr)                            \
-			perror(F ":" STR(L) " " S);                            \
-		else printf("%s:%d %s\n", F, L, S);                            \
+	do {                                                                       \
+		if (errno >= 0 && errno < sys_nerr) perror(F ":" STR(L) " " S);        \
+		else printf("%s:%d %s\n", F, L, S);                                    \
 	} while (0)
 #define PERROR(S) PERROR_(__FILE__, __LINE__, S)
 
 #define DIE(S)                                                                 \
-	do {                                                                   \
-		clear_screen();                                                \
-		PERROR(S);                                                     \
-		exit(EXIT_FAILURE);                                            \
+	do {                                                                       \
+		clear_screen();                                                        \
+		PERROR(S);                                                             \
+		exit(EXIT_FAILURE);                                                    \
 	} while (0)
 
 // ---------------------------------- Types -----------------------------------
@@ -149,8 +148,7 @@ static NORETURN quit(int code) {
 }
 
 static void reset_term(void) {
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1)
-		DIE("tcsetattr");
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1) DIE("tcsetattr");
 }
 
 static void enable_immediate_mode(void) {
@@ -266,7 +264,7 @@ static void insert_line(size_t at) {
 
 	if (at < E.numlines - 1)
 		memmove(&E.lines[at + 1], &E.lines[at],
-			(sizeof *E.lines) * (E.numlines - at));
+		        (sizeof *E.lines) * (E.numlines - at));
 
 	E.lines[at].len = 0;
 	E.lines[at].chars = strdup("");
@@ -285,7 +283,7 @@ static void delete_line(uint at) {
 
 	if (at < E.numlines - 1)
 		memmove(&E.lines[at], &E.lines[at + 1],
-			(sizeof *E.lines) * (E.numlines - (at + 1)));
+		        (sizeof *E.lines) * (E.numlines - (at + 1)));
 
 	E.numlines--;
 
@@ -324,13 +322,12 @@ static void join_lines(uint at) {
 		const bool add_space = src->chars[0] != ' ';
 		if (add_space) add_len++;
 
-		target->chars =
-			realloc(target->chars, target->len + add_len + 1);
+		target->chars = realloc(target->chars, target->len + add_len + 1);
 		if (!target->chars) DIE("realloc");
 
 		if (add_space) target->chars[target->len] = ' ';
 		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars,
-			E.lines[at + 1].len);
+		        E.lines[at + 1].len);
 		target->len += add_len;
 		target->chars[target->len] = '\0';
 	}
@@ -368,8 +365,7 @@ static void line_delete_char(Line *line, uint at) {
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
 
-	memmove(&line->chars[at], &line->chars[at + 1],
-		line->len - (at + 1) + 1);
+	memmove(&line->chars[at], &line->chars[at + 1], line->len - (at + 1) + 1);
 
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
@@ -417,12 +413,11 @@ static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
 		format_message("\"%s\" %d lines, --%.0f%%--",
-			       E.filename ? E.filename : "[NO NAME]",
-			       E.numlines,
-			       ((double)E.cy + 1) / (double)E.numlines * 100);
+		               E.filename ? E.filename : "[NO NAME]", E.numlines,
+		               ((double)E.cy + 1) / (double)E.numlines * 100);
 	else
 		format_message("\"%s\" --No lines in buffer--",
-			       E.filename ? E.filename : "[NO NAME]");
+		               E.filename ? E.filename : "[NO NAME]");
 }
 
 static void chord(const char c) {
@@ -511,13 +506,10 @@ static void process_key_normal(const int c) {
 
 		// Consume whitespace to the left
 		if (isspace(E.lines[E.cy].chars[E.cx - 1]))
-			while (E.cx > 0 &&
-			       isspace(E.lines[E.cy].chars[E.cx - 1]))
-				E.cx--;
+			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx - 1])) E.cx--;
 
 		// Consume word till the beginning
-		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1]))
-			E.cx--;
+		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1])) E.cx--;
 		break;
 
 	// File start and end
@@ -603,12 +595,10 @@ static void process_key_chord(const int c) {
 		case 'e':
 			if (E.cx == 0) break;
 			// Consume word till the beginning
-			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx--;
+			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx])) E.cx--;
 
 			// Consume whitespace to the left
-			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx]))
-				E.cx--;
+			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx])) E.cx--;
 			break;
 		}
 		break;
@@ -710,30 +700,27 @@ static int draw_status(ScreenBuffer *screen) {
 	const int max_len = (int)E.cols;
 
 	char mode[32];
-	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
-				modes[E.mode].status);
+	int mode_len =
+		snprintf(mode, sizeof mode - 1, " --- %s --- ", modes[E.mode].status);
 	if (mode_len == -1) return -1;
 	if (mode_len < (int)sizeof mode && E.mode == MODE_CHORD) {
-		int operator_len = snprintf(mode + mode_len,
-					    sizeof mode - 1 - (size_t)mode_len,
-					    "%c", E.chord);
+		int operator_len = snprintf(
+			mode + mode_len, sizeof mode - 1 - (size_t)mode_len, "%c", E.chord);
 		if (operator_len == -1) return -1;
 		mode_len += operator_len;
 	}
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 
 	char cursor[12];
-	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]",
-				  E.cy + 1, E.cx + 1);
+	int cursor_len =
+		snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy + 1, E.cx + 1);
 	if (cursor_len == -1) return -1;
-	cursor_len =
-		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
+	cursor_len = cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
 	char filename[128];
-	int filename_len =
-		snprintf(filename, sizeof filename - 1, "%s%s",
-			 E.filename == NULL ? "[NO NAME]" : E.filename,
-			 E.dirty ? " [+]" : "");
+	int filename_len = snprintf(filename, sizeof filename - 1, "%s%s",
+	                            E.filename == NULL ? "[NO NAME]" : E.filename,
+	                            E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
 
@@ -799,11 +786,11 @@ static uint render(const Line *line, char *dst, size_t size) {
 static void draw_line(ScreenBuffer *screen, uint index) {
 	if (E.coloff >= E.lines[index].len) return;
 
-	uint rendered_length = render(&E.lines[index], E.render_buffer,
-				      sizeof(E.render_buffer));
+	uint rendered_length =
+		render(&E.lines[index], E.render_buffer, sizeof(E.render_buffer));
 	uint visible_length = rendered_length - E.coloff <= E.cols
-				    ? (rendered_length - E.coloff)
-				    : E.cols;
+	                        ? (rendered_length - E.coloff)
+	                        : E.cols;
 
 	screen_append(screen, E.render_buffer + E.coloff, visible_length);
 }
@@ -817,8 +804,7 @@ static void draw_lines(ScreenBuffer *screen) {
 		case 2: draw_status(screen); break;
 		case 1: draw_message(screen); break;
 		default:
-			if (line_index < E.numlines)
-				draw_line(screen, line_index);
+			if (line_index < E.numlines) draw_line(screen, line_index);
 			else screen_append(screen, "~", 1);
 
 			if (E.numlines == 0 && y == E.rows / 3)
@@ -854,8 +840,7 @@ static void refresh_screen(void) {
 
 // -------------------------------- File I/O ----------------------------------
 static uint line_length(const char *chars, uint len) {
-	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
-		len--;
+	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r')) len--;
 
 	return len;
 }
