@@ -34,17 +34,18 @@
 #define STR(A) #A
 
 #define PERROR_(F, L, S)                                                       \
-	do {                                                                       \
-		if (errno >= 0 && errno < sys_nerr) perror(F ":" STR(L) " " S);        \
-		else printf("%s:%d %s\n", F, L, S);                                    \
+	do {                                                                   \
+		if (errno >= 0 && errno < sys_nerr)                            \
+			perror(F ":" STR(L) " " S);                            \
+		else printf("%s:%d %s\n", F, L, S);                            \
 	} while (0)
 #define PERROR(S) PERROR_(__FILE__, __LINE__, S)
 
 #define DIE(S)                                                                 \
-	do {                                                                       \
-		clear_screen();                                                        \
-		PERROR(S);                                                             \
-		exit(EXIT_FAILURE);                                                    \
+	do {                                                                   \
+		clear_screen();                                                \
+		PERROR(S);                                                     \
+		exit(EXIT_FAILURE);                                            \
 	} while (0)
 
 // ---------------------------------- Types -----------------------------------
@@ -162,7 +163,8 @@ static NORETURN quit(int code) {
 }
 
 static void reset_term(void) {
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1) DIE("tcsetattr");
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1)
+		DIE("tcsetattr");
 }
 
 static void enable_immediate_mode(void) {
@@ -345,7 +347,8 @@ static void join_lines(uint at) {
 		const bool add_space = src->chars[0] != ' ';
 		if (add_space) add_len++;
 
-		target->chars = realloc(target->chars, target->len + add_len + 1);
+		target->chars =
+			realloc(target->chars, target->len + add_len + 1);
 		if (!target->chars) DIE("realloc");
 
 		if (add_space) target->chars[target->len] = ' ';
@@ -388,7 +391,8 @@ static void line_delete_char(Line *line, uint at) {
 	if (line->len == 0) return;
 	if (at >= line->len) at = line->len - 1;
 
-	memmove(&line->chars[at], &line->chars[at + 1], line->len - (at + 1) + 1);
+	memmove(&line->chars[at], &line->chars[at + 1],
+	        line->len - (at + 1) + 1);
 
 	line->len--;
 	line->chars = realloc(line->chars, line->len + 1);
@@ -451,7 +455,8 @@ static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
 		format_message("\"%s\" %d lines, --%.0f%%--",
-		               E.filename ? E.filename : "[NO NAME]", E.numlines,
+		               E.filename ? E.filename : "[NO NAME]",
+		               E.numlines,
 		               ((double)E.cy + 1) / (double)E.numlines * 100);
 	else
 		format_message("\"%s\" --No lines in buffer--",
@@ -544,10 +549,13 @@ static void process_key_normal(const int c) {
 
 		// Consume whitespace to the left
 		if (isspace(E.lines[E.cy].chars[E.cx - 1]))
-			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx - 1])) E.cx--;
+			while (E.cx > 0 &&
+			       isspace(E.lines[E.cy].chars[E.cx - 1]))
+				E.cx--;
 
 		// Consume word till the beginning
-		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1])) E.cx--;
+		while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx - 1]))
+			E.cx--;
 		break;
 
 	// File start and end
@@ -635,10 +643,12 @@ static void process_key_chord(const int c) {
 		case 'e':
 			if (E.cx == 0) break;
 			// Consume word till the beginning
-			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx])) E.cx--;
+			while (E.cx > 0 && !isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx--;
 
 			// Consume whitespace to the left
-			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx])) E.cx--;
+			while (E.cx > 0 && isspace(E.lines[E.cy].chars[E.cx]))
+				E.cx--;
 			break;
 		}
 		break;
@@ -739,27 +749,30 @@ static int draw_status(ScreenBuffer *screen) {
 	const int max_len = (int)E.cols;
 
 	char mode[32];
-	int mode_len =
-		snprintf(mode, sizeof mode - 1, " --- %s --- ", modes[E.mode].status);
+	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
+	                        modes[E.mode].status);
 	if (mode_len == -1) return -1;
 	if (mode_len < (int)sizeof mode && E.mode == MODE_CHORD) {
-		int operator_len = snprintf(
-			mode + mode_len, sizeof mode - 1 - (size_t)mode_len, "%c", E.chord);
+		int operator_len = snprintf(mode + mode_len,
+		                            sizeof mode - 1 - (size_t)mode_len,
+		                            "%c", E.chord);
 		if (operator_len == -1) return -1;
 		mode_len += operator_len;
 	}
 	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
 
 	char cursor[12];
-	int cursor_len =
-		snprintf(cursor, sizeof cursor - 1, "[%d:%d]", E.cy + 1, E.cx + 1);
+	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]",
+	                          E.cy + 1, E.cx + 1);
 	if (cursor_len == -1) return -1;
-	cursor_len = cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
+	cursor_len =
+		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
 
 	char filename[128];
-	int filename_len = snprintf(filename, sizeof filename - 1, "%s%s",
-	                            E.filename == NULL ? "[NO NAME]" : E.filename,
-	                            E.dirty ? " [+]" : "");
+	int filename_len =
+		snprintf(filename, sizeof filename - 1, "%s%s",
+	                 E.filename == NULL ? "[NO NAME]" : E.filename,
+	                 E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
 
@@ -813,10 +826,11 @@ static unsigned long total_microseconds(const struct timespec *ts) {
 static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	char duration_msg[32];
 	unsigned long duration_ms = total_microseconds(duration);
-	int duration_length = duration_ms == 0
-	                        ? 0
-	                        : snprintf(duration_msg, sizeof duration_msg,
-	                                   " %lu ms", total_microseconds(duration));
+	int duration_length =
+		duration_ms == 0
+			? 0
+			: snprintf(duration_msg, sizeof duration_msg, " %lu ms",
+	                           total_microseconds(duration));
 	if (duration_length < 0) return 0;
 
 	if ((uint)duration_length >= sizeof duration_msg)
@@ -826,9 +840,9 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	if (remaining < 0) return 0;
 
 	if (E.message.len > 0) {
-		size_t len =
-			(size_t)(E.message.len > (size_t)remaining ? (size_t)remaining
-		                                               : E.message.len);
+		size_t len = (size_t)(E.message.len > (size_t)remaining
+		                              ? (size_t)remaining
+		                              : E.message.len);
 		screen_append(screen, E.message.data, len);
 		remaining -= len;
 	}
@@ -843,7 +857,8 @@ static uint render(const Line *line, char *dst, size_t size) {
 	for (uint i = 0; i < line->len && i < size - 1; i++)
 		if (line->chars[i] == '\t') {
 			dst[length++] = E.render_tab_characters[0];
-			while (length % TABSTOP) dst[length++] = E.render_tab_characters[1];
+			while (length % TABSTOP)
+				dst[length++] = E.render_tab_characters[1];
 		} else dst[length++] = line->chars[i];
 	dst[length] = '\0';
 
@@ -853,11 +868,11 @@ static uint render(const Line *line, char *dst, size_t size) {
 static void draw_line(ScreenBuffer *screen, uint index) {
 	if (E.coloff >= E.lines[index].len) return;
 
-	uint rendered_length =
-		render(&E.lines[index], E.render_buffer, sizeof(E.render_buffer));
+	uint rendered_length = render(&E.lines[index], E.render_buffer,
+	                              sizeof(E.render_buffer));
 	uint visible_length = rendered_length - E.coloff <= E.cols
-	                        ? (rendered_length - E.coloff)
-	                        : E.cols;
+	                            ? (rendered_length - E.coloff)
+	                            : E.cols;
 
 	screen_append(screen, E.render_buffer + E.coloff, visible_length);
 }
@@ -872,7 +887,8 @@ static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
 		else screen_append(screen, "~", 1);
 
 		// TODO: Welcome screen
-		if (E.numlines == 0 && y == E.rows / 3) draw_welcome_message(screen);
+		if (E.numlines == 0 && y == E.rows / 3)
+			draw_welcome_message(screen);
 
 		// Close of the line
 		screen_append(screen, "\x1b[K", 3);
@@ -906,7 +922,8 @@ static struct timespec refresh_screen(const struct timespec *duration) {
 
 // -------------------------------- File I/O ----------------------------------
 static uint line_length(const char *chars, uint len) {
-	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r')) len--;
+	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
+		len--;
 
 	return len;
 }
@@ -983,7 +1000,8 @@ static void editor_init(void) {
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
 
-static struct timespec elapsed_time(const struct timespec *start, const struct timespec *end) {
+static struct timespec elapsed_time(const struct timespec *start,
+                                    const struct timespec *end) {
 	struct timespec elapsed;
 
 	elapsed.tv_sec = end->tv_sec - start->tv_sec;
