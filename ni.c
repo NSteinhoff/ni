@@ -695,16 +695,13 @@ static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
 }
 
 static void draw_welcome_message(ScreenBuffer *screen) {
+	uint cols = E.cols - 1;
 	char s[80];
 	int len_required =
 		snprintf(s, sizeof s, "ni editor -- version %s", NI_VERSION);
 	if (len_required == -1) DIE("snprintf");
-	uint len = (uint)len_required > E.cols ? E.cols : (uint)len_required;
-	uint padding = (E.cols - len) / 2;
-	if (padding) {
-		screen_append(screen, "~", 1);
-		padding--;
-	}
+	uint len = (uint)len_required > cols ? cols : (uint)len_required;
+	uint padding = (cols - len) / 2;
 	while (padding--) screen_append(screen, " ", 1);
 	screen_append(screen, s, len);
 }
@@ -788,47 +785,48 @@ static int draw_message(ScreenBuffer *screen) {
 }
 
 static uint render(const Line *line, char *dst, size_t size) {
-	const char *chars = line->chars;
-	const uint len = line->len;
+	uint length = 0;
+	for (uint i = 0; i < line->len && i < size - 1; i++)
+		if (line->chars[i] == '\t') {
+			dst[length++] = E.rendertab[0];
+			while (length % TABSTOP) dst[length++] = E.rendertab[1];
+		} else dst[length++] = line->chars[i];
+	dst[length] = '\0';
 
-	uint rlen = 0;
-	for (uint i = 0; i < len && i < size - 1; i++)
-		if (chars[i] == '\t') {
-			dst[rlen++] = E.rendertab[0];
-			while (rlen % TABSTOP) dst[rlen++] = E.rendertab[1];
-		} else dst[rlen++] = chars[i];
-	dst[rlen] = '\0';
+	return length;
+}
 
-	return rlen;
+static void draw_line(ScreenBuffer *screen, uint index) {
+	if (E.coloff >= E.lines[index].len) return;
+
+	uint rendered_length = render(&E.lines[index], E.render_buffer,
+				      sizeof(E.render_buffer));
+	uint visible_length = rendered_length - E.coloff <= E.cols
+				    ? (rendered_length - E.coloff)
+				    : E.cols;
+
+	screen_append(screen, E.render_buffer + E.coloff, visible_length);
 }
 
 static void draw_lines(ScreenBuffer *screen) {
 	for (uint y = 0; y < E.rows; y++) {
-		bool clear = true;
-		uint idx = y + E.rowoff;
+		uint y_bottom = E.rows - y;
+		uint line_index = y + E.rowoff;
 
-		if (y == E.rows - 2) {
-			draw_status(screen);
-			clear = false;
-		} else if (y == E.rows - 1) {
-			draw_message(screen);
-		} else if (idx >= E.numlines) {
+		switch (y_bottom) {
+		case 2: draw_status(screen); break;
+		case 1: draw_message(screen); break;
+		default:
+			if (line_index < E.numlines)
+				draw_line(screen, line_index);
+			else screen_append(screen, "~", 1);
+
 			if (E.numlines == 0 && y == E.rows / 3)
 				draw_welcome_message(screen);
-			else screen_append(screen, "~", 1);
-		} else if (E.coloff < E.lines[idx].len) {
-			Line *line = &E.lines[idx];
-
-			uint rlen = render(line, E.render_buffer,
-					   sizeof(E.render_buffer));
-
-			uint len = rlen - E.coloff <= E.cols ? (rlen - E.coloff)
-							     : E.cols;
-			screen_append(screen, E.render_buffer + E.coloff, len);
 		}
 
-		if (clear) screen_append(screen, "\x1b[K", 3);
-		if (y != E.rows - 1) screen_append(screen, "\r\n", 2);
+		screen_append(screen, "\x1b[K", 3);
+		if (y_bottom > 1) screen_append(screen, "\r\n", 2);
 	}
 }
 

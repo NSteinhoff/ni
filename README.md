@@ -10,6 +10,8 @@ not a code golfing exercise. The code strives to be readable and maintainable.
 ## TODO
 
 - welcome screen listing keymaps
+- autoindent
+- repeat 'f/F' with ';/,'
 - delete + motion
 - command line prompt
 - searching
