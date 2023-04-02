@@ -8,6 +8,7 @@
 #include <stdlib.h>  // realloc, free, exit, atexit
 #include <string.h>  // strndup, strdup, memmove
 #include <termios.h> // struct termios, tcsetattr, tcgetattr, TCSANOW, BRKINT, ICRNL, INPCK, ISTRIP, IXON, OPOST, CS8, ECHO, ICANON, ISIG, IEXTEN
+#include <time.h>    // timespec_get, struct timespec, TIME_UTC
 #include <unistd.h>  // write, read, STDIN_FILENO, STDOUT_FILENO
 
 // --------------------------------- Defines ----------------------------------
@@ -266,6 +267,15 @@ static int get_window_size(uint *rows, uint *cols) {
 	if (get_cursor_position(rows, cols) == -1) return -1;
 
 	return 0;
+}
+
+// ---------------------------------- Misc ------------------------------------
+static struct timespec get_current_time(void) {
+	struct timespec ts;
+
+	if (timespec_get(&ts, TIME_UTC) == 0) DIE("timespec_get");
+
+	return ts;
 }
 
 // --------------------------------- Editing ----------------------------------
@@ -654,9 +664,14 @@ static void process_key_chord(const int c) {
 	E.mode = MODE_NORMAL;
 }
 
-static void process_key(void) {
-	modes[E.mode].process_key(read_key());
+static struct timespec process_key(void) {
+	int key = read_key();
+	struct timespec key_received_at = get_current_time();
+
+	modes[E.mode].process_key(key);
 	if (E.mode == MODE_NORMAL) cursor_normalize();
+
+	return key_received_at;
 }
 
 static uint cx2rx(uint cx, Line *line) {
@@ -787,12 +802,40 @@ static int draw_status(ScreenBuffer *screen) {
 	return 0;
 }
 
-static int draw_message(ScreenBuffer *screen) {
-	if (E.message.len == 0) return 0;
+static unsigned long total_microseconds(const struct timespec *ts) {
+	if (ts == NULL) return 0;
 
-	size_t len = (size_t)(E.message.len > E.cols ? E.cols : E.message.len);
+	return ((unsigned long)ts->tv_sec * 1000000000ul +
+	        (unsigned long)ts->tv_nsec) /
+	       1000;
+}
 
-	return screen_append(screen, E.message.data, len);
+static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
+	char duration_msg[32];
+	unsigned long duration_ms = total_microseconds(duration);
+	int duration_length = duration_ms == 0
+	                        ? 0
+	                        : snprintf(duration_msg, sizeof duration_msg,
+	                                   " %lu ms", total_microseconds(duration));
+	if (duration_length < 0) return 0;
+
+	if ((uint)duration_length >= sizeof duration_msg)
+		duration_length = sizeof duration_msg;
+
+	int remaining = (int)E.cols - duration_length;
+	if (remaining < 0) return 0;
+
+	if (E.message.len > 0) {
+		size_t len =
+			(size_t)(E.message.len > (size_t)remaining ? (size_t)remaining
+		                                               : E.message.len);
+		screen_append(screen, E.message.data, len);
+		remaining -= len;
+	}
+	while (remaining--) screen_append(screen, " ", 1);
+	screen_append(screen, duration_msg, (size_t)duration_length);
+
+	return 0;
 }
 
 static uint render(const Line *line, char *dst, size_t size) {
@@ -819,12 +862,12 @@ static void draw_line(ScreenBuffer *screen, uint index) {
 	screen_append(screen, E.render_buffer + E.coloff, visible_length);
 }
 
-static void draw_lines(ScreenBuffer *screen) {
+static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
 	for (uint y = 0; y < E.rows; y++) {
 		uint line_index = y + E.rowoff;
 
 		if (E.rows - y == 2) draw_status(screen);
-		else if (E.rows - y == 1) draw_message(screen);
+		else if (E.rows - y == 1) draw_message(screen, duration);
 		else if (line_index < E.numlines) draw_line(screen, line_index);
 		else screen_append(screen, "~", 1);
 
@@ -846,17 +889,19 @@ static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
 	return 0;
 }
 
-static void refresh_screen(void) {
+static struct timespec refresh_screen(const struct timespec *duration) {
 	E.screen.len = 0;
 	editor_scroll();
 	screen_append(&E.screen, "\x1b[?25l", 6); // hide cursor
 
 	place_cursor(&E.screen, 0, 0);
-	draw_lines(&E.screen);
+	draw_lines(&E.screen, duration);
 	place_cursor(&E.screen, E.rx - E.coloff, E.cy - E.rowoff);
 
 	screen_append(&E.screen, "\x1b[?25h", 6); // show cursor
 	write(STDOUT_FILENO, E.screen.data, E.screen.len);
+
+	return get_current_time();
 }
 
 // -------------------------------- File I/O ----------------------------------
@@ -919,7 +964,7 @@ static void editor_save(void) {
 static void handle_resize(int sig) {
 	(void)sig;
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
-	refresh_screen();
+	refresh_screen(NULL);
 }
 
 static void editor_init(void) {
@@ -944,8 +989,15 @@ int main(int argc, char *argv[]) {
 	editor_init();
 	if (argc >= 2) editor_open(argv[1]);
 
+	struct timespec render_done, input_received = get_current_time();
+	struct timespec duration = {0};
+
 	while (true) {
-		refresh_screen();
-		process_key();
+		render_done = refresh_screen(&duration);
+
+		duration.tv_sec = render_done.tv_sec - input_received.tv_sec;
+		duration.tv_nsec = render_done.tv_nsec - input_received.tv_nsec;
+
+		input_received = process_key();
 	}
 }
