@@ -836,11 +836,11 @@ static unsigned long total_microseconds(const struct timespec *ts) {
 
 static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	char duration_msg[32];
-	unsigned long duration_ms = total_microseconds(duration);
+	unsigned long duration_us = total_microseconds(duration);
 	int duration_length =
-		duration_ms == 0
+		duration_us == 0
 			? 0
-			: snprintf(duration_msg, sizeof duration_msg, " %lu ms",
+			: snprintf(duration_msg, sizeof duration_msg, " %lu us",
 	                           total_microseconds(duration));
 	if (duration_length < 0) return 0;
 
