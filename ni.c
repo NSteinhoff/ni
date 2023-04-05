@@ -1,5 +1,5 @@
 // -------------------------------- Includes ----------------------------------
-#include <ctype.h>   // isnumber, isblank, isprint, isspace
+#include <ctype.h>   // isnumber, isblank, isprint, isspace, isalnum
 #include <errno.h>   // errno
 #include <signal.h>  // signal, SIGWINCH
 #include <stdarg.h>  // va_list, va_start, va_end
@@ -19,6 +19,7 @@
 #define MAX_SCREEN_LEN 1 << 16
 #define MAX_RENDER 1024
 #define MAX_MESSAGE_LEN 256
+#define MAX_CHORD 3 // d[ge] or d[f..]
 #define TABSTOP 8
 #define NUM_UTIL_LINES 2
 
@@ -55,8 +56,6 @@ typedef struct termios Term;
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
-	MODE_CHORD,
-	MODE_COUNT,
 } EditorMode;
 
 typedef enum EditorKey {
@@ -111,7 +110,8 @@ typedef struct Editor {
 	bool dirty;
 
 	// Input
-	char chord;
+	char chord[MAX_CHORD];
+	uint chord_len;
 	char find_char;
 	bool find_forward;
 
@@ -131,25 +131,8 @@ typedef struct Editor {
 	char render_tab_characters[2];
 } Editor;
 
-typedef struct Mode {
-	char *status;
-	void (*process_key)(int c);
-} Mode;
-
 // ------------------------------ State & Data --------------------------------
 static Editor E;
-
-// ---------------------------------- Modes -----------------------------------
-static void editor_save(void);
-static void process_key_normal(const int c);
-static void process_key_insert(const int c);
-static void process_key_chord(const int c);
-
-static Mode modes[MODE_COUNT] = {
-	[MODE_NORMAL] = {"NORMAL", process_key_normal},
-	[MODE_INSERT] = {"INSERT", process_key_insert},
-	[MODE_CHORD] = {"CHORD", process_key_chord},
-};
 
 // -------------------------------- Terminal ----------------------------------
 static void clear_screen(void) {
@@ -545,104 +528,197 @@ static void delete_motion(char c) {
 		start = find_word_backwards(E.cx, line);
 		end = E.cx;
 		break;
+	case 'E':
+		start = find_end_backwards(E.cx, line);
+		end = E.cx;
+		break;
 	default: return;
 	}
-	delete_chars(start, end - E.cx, line);
+	delete_chars(start, end - start, line);
 	E.cx = start;
 }
 
-static void start_chord(const char c) {
-	E.mode = MODE_CHORD;
-	E.chord = c;
-}
+static void editor_save(void);
 
 static void process_key_normal(const int c) {
-	switch (c) {
-	case 'q': quit(EXIT_SUCCESS);
-	case CTRL_KEY('q'): quit(EXIT_FAILURE);
-	case CTRL_KEY('s'): editor_save(); break;
-	case CTRL_KEY('g'): show_file_info(); break;
+	E.chord[E.chord_len++] = (char)c;
+	if (E.chord_len == 1) {
+		switch (c) {
+		case 'q': quit(EXIT_SUCCESS);
+		case CTRL_KEY('q'): quit(EXIT_FAILURE);
+		case CTRL_KEY('s'): editor_save(); break;
+		case CTRL_KEY('g'): show_file_info(); break;
 
-	// Enter INSERT mode
-	case 'i':
-	case 'a':
-	case 'A':
-	case 'I': enter_insert_mode((char)c); break;
+		// Enter INSERT mode
+		case 'i':
+		case 'a':
+		case 'A':
+		case 'I': enter_insert_mode((char)c); break;
 
-	// Scrolling
-	case CTRL_KEY('l'): E.coloff++; break;
-	case CTRL_KEY('h'):
-		if (E.coloff > 0) E.coloff--;
-		break;
-	case CTRL_KEY('e'): E.rowoff++; break;
-	case CTRL_KEY('y'):
-		if (E.rowoff > 0) E.rowoff--;
-		break;
+		// Scrolling
+		case CTRL_KEY('l'): E.coloff++; break;
+		case CTRL_KEY('h'):
+			if (E.coloff > 0) E.coloff--;
+			break;
+		case CTRL_KEY('e'): E.rowoff++; break;
+		case CTRL_KEY('y'):
+			if (E.rowoff > 0) E.rowoff--;
+			break;
 
-	// Jump half-screen up/down
-	case CTRL_KEY('d'):
-		for (uint n = E.rows / 2; n > 0; n--) cursor_move('j');
-		break;
-	case CTRL_KEY('u'):
-		for (uint n = E.rows / 2; n > 0; n--) cursor_move('k');
-		break;
+		// Jump half-screen up/down
+		case CTRL_KEY('d'):
+			for (uint n = E.rows / 2; n > 0; n--) cursor_move('j');
+			break;
+		case CTRL_KEY('u'):
+			for (uint n = E.rows / 2; n > 0; n--) cursor_move('k');
+			break;
 
-	// Start/End of line
-	case '0': E.cx = 0; break;
-	case '$':
-		if (E.numlines) E.cx = E.lines[E.cy].len - 1;
-		break;
+		// Start/End of line
+		case '0': E.cx = 0; break;
+		case '$':
+			if (E.numlines) E.cx = E.lines[E.cy].len - 1;
+			break;
 
-	// Word wise movement
-	case 'w': E.cx = find_word(E.cx, &E.lines[E.cy]); break;
-	case 'b': E.cx = find_word_backwards(E.cx, &E.lines[E.cy]); break;
-	case 'e': E.cx = find_end(E.cx, &E.lines[E.cy]); break;
+		// Word wise movement
+		case 'w': E.cx = find_word(E.cx, &E.lines[E.cy]); break;
+		case 'b':
+			E.cx = find_word_backwards(E.cx, &E.lines[E.cy]);
+			break;
+		case 'e': E.cx = find_end(E.cx, &E.lines[E.cy]); break;
 
-	// Jumps
-	case 'G': E.cy = E.numlines - 1; break;
+		// Jumps
+		case 'G': E.cy = E.numlines - 1; break;
 
-	// Inserting lines
-	case 'O':
-		E.cx = 0;
-		insert_line(E.cy);
-		E.mode = MODE_INSERT;
-		break;
-	case 'o':
-		E.cx = 0;
-		if (E.numlines == 0) insert_line(E.cy);
-		else insert_line(E.cy++ + 1);
-		E.mode = MODE_INSERT;
-		break;
+		// Inserting lines
+		case 'O':
+			E.cx = 0;
+			insert_line(E.cy);
+			E.mode = MODE_INSERT;
+			break;
+		case 'o':
+			E.cx = 0;
+			if (E.numlines == 0) insert_line(E.cy);
+			else insert_line(E.cy++ + 1);
+			E.mode = MODE_INSERT;
+			break;
 
-	// Join lines
-	case 'J': join_lines(E.cy); break;
+		// Join lines
+		case 'J': join_lines(E.cy); break;
 
-	// Deleting
-	case 'D': crop_line(E.cx--); break;
+		// Deleting
+		case 'D': crop_line(E.cx--); break;
 
-	// Changing
-	case 'C':
-		if (E.numlines == 0) process_key_normal('i');
-		process_key_normal('D');
-		process_key_normal('a');
-		break;
+		// Changing
+		case 'C':
+			if (E.numlines > 0) crop_line(E.cx);
+			enter_insert_mode('i');
+			break;
 
-	// Delete single character
-	case 'x': delete_chars(E.cx, 1, &E.lines[E.cy]); break;
+		// Delete single character
+		case 'x': delete_chars(E.cx, 1, &E.lines[E.cy]); break;
 
-	// Search in line
-	case ';':
-	case ',': E.cx = repeat_find(E.cx, &E.lines[E.cy], c == ';'); break;
+		// Search in line
+		case ';':
+		case ',':
+			E.cx = repeat_find(E.cx, &E.lines[E.cy], c == ';');
+			break;
 
-	case 'c':
-	case 'd':
-	case 'g':
-	case 'f':
-	case 'F':
-	case 'Z': start_chord((char)c); break;
+		case 'c':
+		case 'd':
+		case 'g':
+		case 'f':
+		case 'F':
+		case 'Z': return;
 
-	default: cursor_move(c);
+		default: cursor_move(c); break;
+		}
+	} else if (E.chord_len == 2) {
+		switch (E.chord[0]) {
+		case 'Z':
+			switch (c) {
+			case 'Z': editor_save(); quit(EXIT_SUCCESS);
+			case 'Q': quit(EXIT_SUCCESS);
+			}
+
+		case 'g':
+			switch (c) {
+			case 'g': E.cy = 0; break;
+			case 'e':
+				E.cx = find_end_backwards(E.cx, &E.lines[E.cy]);
+				break;
+			}
+			break;
+
+		case 'd':
+			switch (c) {
+			case 'd': delete_line(E.cy); break;
+			case 'w':
+			case 'e':
+			case 'b': delete_motion((char)c); break;
+			case 'f':
+			case 'F':
+			case 'g': return;
+			}
+			break;
+
+		case 'c':
+			switch (c) {
+			case 'w':
+			case 'e':
+			case 'b': delete_motion((char)c); break;
+			}
+			enter_insert_mode('i');
+			break;
+
+		case 'f':
+		case 'F':
+			if (isprint(c) || isblank(c)) {
+				E.find_forward = E.chord[0] == 'f';
+				E.find_char = (char)c;
+				E.cx = find_char_in_line(E.cx, &E.lines[E.cy],
+				                         E.find_char,
+				                         E.find_forward);
+			}
+			break;
+		}
+	} else if (E.chord_len == 3) {
+		switch (E.chord[0]) {
+		case 'd':
+			switch (E.chord[1]) {
+			case 'g':
+				switch (c) {
+				case 'e': delete_motion('E'); break;
+				}
+				break;
+			case 'f':
+				if (isprint(c) || isblank(c)) {
+					E.find_forward = true;
+					E.find_char = (char)c;
+					uint target = find_char_in_line(
+						E.cx, &E.lines[E.cy],
+						E.find_char, true);
+					delete_chars(E.cx, target + 1 - E.cx,
+					             &E.lines[E.cy]);
+				}
+				break;
+			case 'F':
+				if (isprint(c) || isblank(c)) {
+					E.find_forward = false;
+					E.find_char = (char)c;
+					uint target = find_char_in_line(
+						E.cx, &E.lines[E.cy],
+						E.find_char, false);
+					delete_chars(target, E.cx - target,
+					             &E.lines[E.cy]);
+					E.cx = target;
+				}
+				break;
+			}
+			break;
+		}
 	}
+
+	E.chord_len = 0;
 }
 
 static void process_key_insert(const int c) {
@@ -671,65 +747,19 @@ static void process_key_insert(const int c) {
 	}
 }
 
-static void process_key_chord(const int c) {
-	switch (E.chord) {
-	case 'Z':
-		switch (c) {
-		case 'Z': editor_save(); quit(EXIT_SUCCESS);
-		case 'Q': quit(EXIT_SUCCESS);
-		}
-
-	case 'g':
-		switch (c) {
-		case 'g': E.cy = 0; break;
-		case 'e':
-			E.cx = find_end_backwards(E.cx, &E.lines[E.cy]);
-			break;
-		}
-		break;
-
-	case 'd':
-		switch (c) {
-		case 'd': delete_line(E.cy); break;
-		case 'w':
-		case 'e':
-		case 'b': delete_motion((char)c); break;
-		}
-		break;
-
-	case 'c':
-		switch (c) {
-		case 'w':
-		case 'e':
-		case 'b': delete_motion((char)c); break;
-		}
-		enter_insert_mode('i');
-		break;
-
-	case 'f':
-	case 'F': {
-		if (isprint(c) || isblank(c)) {
-			E.find_forward = E.chord == 'f';
-			E.find_char = (char)c;
-			E.cx = find_char_in_line(E.cx, &E.lines[E.cy],
-			                         E.find_char, E.find_forward);
-		}
-		break;
-	}
-	}
-
-	// Be default we switch back to normal mode. Some chords (like 'c')
-	// might to switch modes to someting other than normal mode, so we
-	// need to respect that.
-	if (E.mode == MODE_CHORD) E.mode = MODE_NORMAL;
-}
-
 static struct timespec process_key(void) {
 	int key = read_key();
 	struct timespec key_received_at = get_current_time();
 
-	modes[E.mode].process_key(key);
-	if (E.mode == MODE_NORMAL) cursor_normalize();
+	switch (E.mode) {
+	case MODE_NORMAL: {
+		process_key_normal(key);
+		if (E.mode == MODE_NORMAL) cursor_normalize();
+	} break;
+	case MODE_INSERT: {
+		process_key_insert(key);
+	} break;
+	}
 
 	return key_received_at;
 }
@@ -784,47 +814,48 @@ static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
 }
 
 static void draw_welcome_message(ScreenBuffer *screen) {
-	uint cols = E.cols - 1;
-	char s[80];
-	int len_required =
-		snprintf(s, sizeof s, "ni editor -- version %s", NI_VERSION);
-	if (len_required == -1) DIE("snprintf");
-	uint len = (uint)len_required > cols ? cols : (uint)len_required;
-	uint padding = (cols - len) / 2;
+	uint max_len = E.cols - 1;
+	char buf[80];
+	int required_len = snprintf(buf, sizeof buf,
+	                            "ni editor -- version %s", NI_VERSION);
+	if (required_len == -1) DIE("snprintf");
+	uint len = (uint)required_len > max_len ? max_len : (uint)required_len;
+	uint padding = (max_len - len) / 2;
 	while (padding--) screen_append(screen, " ", 1);
-	screen_append(screen, s, len);
+	screen_append(screen, buf, len);
 }
 
 static int draw_status(ScreenBuffer *screen) {
 	const int max_len = (int)E.cols;
 
-	char mode[32];
-	int mode_len = snprintf(mode, sizeof mode - 1, " --- %s --- ",
-	                        modes[E.mode].status);
+	char mode_buf[32];
+	int mode_len = snprintf(mode_buf, sizeof mode_buf - 1, " --- %s --- ",
+	                        E.mode == MODE_NORMAL ? "NORMAL" : "INSERT");
 	if (mode_len == -1) return -1;
-	if (mode_len < (int)sizeof mode && E.mode == MODE_CHORD) {
-		int operator_len = snprintf(mode + mode_len,
-		                            sizeof mode - 1 - (size_t)mode_len,
-		                            "%c", E.chord);
-		if (operator_len == -1) return -1;
-		mode_len += operator_len;
+	if (mode_len < (int)sizeof mode_buf && E.mode == MODE_NORMAL) {
+		int chord_len = snprintf(mode_buf + mode_len,
+		                         sizeof mode_buf - 1 - (size_t)mode_len,
+		                         "%.*s", E.chord_len, E.chord);
+		if (chord_len == -1) return -1;
+		mode_len += chord_len;
 	}
-	mode_len = mode_len > (int)sizeof mode ? sizeof mode : mode_len;
+	mode_len = mode_len > (int)sizeof mode_buf ? sizeof mode_buf : mode_len;
 
-	char cursor[12];
-	int cursor_len = snprintf(cursor, sizeof cursor - 1, "[%d:%d]",
+	char cursor_buf[12];
+	int cursor_len = snprintf(cursor_buf, sizeof cursor_buf - 1, "[%d:%d]",
 	                          E.cy + 1, E.cx + 1);
 	if (cursor_len == -1) return -1;
-	cursor_len =
-		cursor_len > (int)sizeof cursor ? sizeof cursor : cursor_len;
+	cursor_len = cursor_len > (int)sizeof cursor_buf ? sizeof cursor_buf
+	                                                 : cursor_len;
 
-	char filename[128];
+	char filename_buf[128];
 	int filename_len =
-		snprintf(filename, sizeof filename - 1, "%s%s",
+		snprintf(filename_buf, sizeof filename_buf - 1, "%s%s",
 	                 E.filename == NULL ? "[NO NAME]" : E.filename,
 	                 E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
-	if (filename_len > (int)sizeof filename) filename_len = sizeof filename;
+	if (filename_len > (int)sizeof filename_buf)
+		filename_len = sizeof filename_buf;
 
 	const int total_len = mode_len + filename_len + cursor_len;
 	if (max_len < total_len) {
@@ -835,9 +866,9 @@ static int draw_status(ScreenBuffer *screen) {
 
 	// clang-format off
 	struct { char *s;  int len; } parts[] = {
-		{mode,     mode_len},
-		{filename, filename_len},
-		{cursor,   cursor_len}
+		{mode_buf,     mode_len},
+		{filename_buf, filename_len},
+		{cursor_buf,   cursor_len}
 	};
 	// clang-format on
 
@@ -876,17 +907,17 @@ static unsigned long total_microseconds(const struct timespec *ts) {
 static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	char duration_msg[32];
 	unsigned long duration_us = total_microseconds(duration);
-	int duration_length =
+	int duration_len =
 		duration_us == 0
 			? 0
 			: snprintf(duration_msg, sizeof duration_msg, " %lu us",
 	                           total_microseconds(duration));
-	if (duration_length < 0) return 0;
+	if (duration_len < 0) return 0;
 
-	if ((uint)duration_length >= sizeof duration_msg)
-		duration_length = sizeof duration_msg;
+	if ((uint)duration_len >= sizeof duration_msg)
+		duration_len = sizeof duration_msg;
 
-	int remaining = (int)E.cols - duration_length;
+	int remaining = (int)E.cols - duration_len;
 	if (remaining < 0) return 0;
 
 	if (E.message.len > 0) {
@@ -897,34 +928,32 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 		remaining -= len;
 	}
 	while (remaining--) screen_append(screen, " ", 1);
-	screen_append(screen, duration_msg, (size_t)duration_length);
+	screen_append(screen, duration_msg, (size_t)duration_len);
 
 	return 0;
 }
 
 static uint render(const Line *line, char *dst, size_t size) {
-	uint length = 0;
+	uint len = 0;
 	for (uint i = 0; i < line->len && i < size - 1; i++)
 		if (line->chars[i] == '\t') {
-			dst[length++] = E.render_tab_characters[0];
-			while (length % TABSTOP)
-				dst[length++] = E.render_tab_characters[1];
-		} else dst[length++] = line->chars[i];
-	dst[length] = '\0';
+			dst[len++] = E.render_tab_characters[0];
+			while (len % TABSTOP)
+				dst[len++] = E.render_tab_characters[1];
+		} else dst[len++] = line->chars[i];
+	dst[len] = '\0';
 
-	return length;
+	return len;
 }
 
 static void draw_line(ScreenBuffer *screen, uint index) {
 	if (E.coloff >= E.lines[index].len) return;
-
-	uint rendered_length = render(&E.lines[index], E.render_buffer,
-	                              sizeof(E.render_buffer));
-	uint visible_length = rendered_length - E.coloff <= E.cols
-	                            ? (rendered_length - E.coloff)
-	                            : E.cols;
-
-	screen_append(screen, E.render_buffer + E.coloff, visible_length);
+	uint rendered_len = render(&E.lines[index], E.render_buffer,
+	                           sizeof(E.render_buffer));
+	uint visible_len = rendered_len - E.coloff <= E.cols
+	                         ? (rendered_len - E.coloff)
+	                         : E.cols;
+	screen_append(screen, E.render_buffer + E.coloff, visible_len);
 }
 
 static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
@@ -1036,7 +1065,6 @@ static void handle_resize(int sig) {
 
 static void editor_init(void) {
 	E.mode = MODE_NORMAL;
-	E.chord = '\0';
 	E.lines = NULL;
 	E.filename = NULL;
 	E.numlines = 0;
@@ -1046,6 +1074,7 @@ static void editor_init(void) {
 	E.render_tab_characters[1] = '-';
 	E.message.len = 0;
 	E.dirty = false;
+	E.chord_len = 0;
 
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
