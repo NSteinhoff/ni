@@ -69,9 +69,7 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 
 ## TODO
 
-This is a new line at the end
-
-- delete + motion
+- delete/change + motion
 - searching
 - incremental search
 - add <count> to keys

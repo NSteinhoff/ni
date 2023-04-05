@@ -386,15 +386,15 @@ static void line_insert_char(Line *line, uint at, char c) {
 	E.dirty = true;
 }
 
-static void delete_char(uint at, Line *line) {
+static void delete_chars(uint at, uint n, Line *line) {
 	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
-	if (at >= line->len) at = line->len - 1;
+	if (at >= line->len) return;
+	uint end = at + n;
 
-	memmove(&line->chars[at], &line->chars[at + 1],
-	        line->len - (at + 1) + 1);
+	memmove(&line->chars[at], &line->chars[end], line->len - end + 1);
 
-	line->len--;
+	line->len -= n;
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
 
@@ -452,10 +452,10 @@ static uint find_word(uint x, const Line *line) {
 	if (x >= line->len - 1) return x;
 
 	// Consume current word
-	while (x < line->len - 1 && !isspace(line->chars[x])) x++;
+	while (x < line->len - 1 && isalnum(line->chars[x])) x++;
 
 	// Consume whitespaces
-	while (x < line->len - 1 && isspace(line->chars[x])) x++;
+	while (x < line->len - 1 && !isalnum(line->chars[x])) x++;
 
 	return x;
 }
@@ -464,11 +464,11 @@ static uint find_end(uint x, const Line *line) {
 	if (x >= line->len - 1) return x;
 
 	// Consume whitespace to the right
-	if (isspace(line->chars[x + 1]))
-		while (x < line->len - 1 && isspace(line->chars[x + 1])) x++;
+	if (!isalnum(line->chars[x + 1]))
+		while (x < line->len - 1 && !isalnum(line->chars[x + 1])) x++;
 
 	// Consume word till the end
-	while (x < line->len - 1 && !isspace(line->chars[x + 1])) x++;
+	while (x < line->len - 1 && isalnum(line->chars[x + 1])) x++;
 
 	return x;
 }
@@ -476,11 +476,11 @@ static uint find_end(uint x, const Line *line) {
 static uint find_word_backwards(uint x, const Line *line) {
 	if (x == 0) return x;
 
-	if (isspace(line->chars[x - 1]))
-		while (x > 0 && isspace(line->chars[x - 1])) x--;
+	if (!isalnum(line->chars[x - 1]))
+		while (x > 0 && !isalnum(line->chars[x - 1])) x--;
 
 	// Consume word till the beginning
-	while (x > 0 && !isspace(line->chars[x - 1])) x--;
+	while (x > 0 && !!isalnum(line->chars[x - 1])) x--;
 
 	return x;
 }
@@ -489,10 +489,10 @@ static uint find_end_backwards(uint x, const Line *line) {
 	if (x == 0) return x;
 
 	// Consume word till the beginning
-	while (x > 0 && !isspace(line->chars[x])) x--;
+	while (x > 0 && isalnum(line->chars[x])) x--;
 
 	// Consume whitespace to the left
-	while (x > 0 && isspace(line->chars[x])) x--;
+	while (x > 0 && !isalnum(line->chars[x])) x--;
 
 	return x;
 }
@@ -527,6 +527,28 @@ static void enter_insert_mode(char c) {
 	case 'I': E.cx = 0; break;
 	}
 	E.mode = MODE_INSERT;
+}
+
+static void delete_motion(char c) {
+	Line *line = &E.lines[E.cy];
+	uint start, end;
+	switch (c) {
+	case 'w':
+		start = E.cx;
+		end = find_word(E.cx, line);
+		break;
+	case 'e':
+		start = E.cx;
+		end = find_end(E.cx, line) + 1;
+		break;
+	case 'b':
+		start = find_word_backwards(E.cx, line);
+		end = E.cx;
+		break;
+	default: return;
+	}
+	delete_chars(start, end - E.cx, line);
+	E.cx = start;
 }
 
 static void start_chord(const char c) {
@@ -606,12 +628,13 @@ static void process_key_normal(const int c) {
 		break;
 
 	// Delete single character
-	case 'x': delete_char(E.cx, &E.lines[E.cy]); break;
+	case 'x': delete_chars(E.cx, 1, &E.lines[E.cy]); break;
 
 	// Search in line
 	case ';':
 	case ',': E.cx = repeat_find(E.cx, &E.lines[E.cy], c == ';'); break;
 
+	case 'c':
 	case 'd':
 	case 'g':
 	case 'f':
@@ -632,7 +655,7 @@ static void process_key_insert(const int c) {
 
 	case KEY_DELETE:
 		if (E.cx == 0) break;
-		delete_char(--E.cx, &E.lines[E.cy]);
+		delete_chars(--E.cx, 1, &E.lines[E.cy]);
 		break;
 
 	case KEY_RETURN:
@@ -659,14 +682,28 @@ static void process_key_chord(const int c) {
 	case 'g':
 		switch (c) {
 		case 'g': E.cy = 0; break;
-		case 'e': find_end_backwards(E.cx, &E.lines[E.cy]); break;
+		case 'e':
+			E.cx = find_end_backwards(E.cx, &E.lines[E.cy]);
+			break;
 		}
 		break;
 
 	case 'd':
 		switch (c) {
 		case 'd': delete_line(E.cy); break;
+		case 'w':
+		case 'e':
+		case 'b': delete_motion((char)c); break;
 		}
+		break;
+
+	case 'c':
+		switch (c) {
+		case 'w':
+		case 'e':
+		case 'b': delete_motion((char)c); break;
+		}
+		enter_insert_mode('i');
 		break;
 
 	case 'f':
@@ -681,8 +718,10 @@ static void process_key_chord(const int c) {
 	}
 	}
 
-	E.chord = '\0';
-	E.mode = MODE_NORMAL;
+	// Be default we switch back to normal mode. Some chords (like 'c')
+	// might to switch modes to someting other than normal mode, so we
+	// need to respect that.
+	if (E.mode == MODE_CHORD) E.mode = MODE_NORMAL;
 }
 
 static struct timespec process_key(void) {
