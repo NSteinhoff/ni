@@ -285,15 +285,14 @@ static void insert_line(size_t at) {
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 	if (!E.lines) DIE("realloc");
 
-	if (at < LASTLINE)
-		memmove(&E.lines[at + 1], &E.lines[at],
+	if (at <= LASTLINE)
+		memmove(E.lines + at + 1, E.lines + at,
 		        (sizeof *E.lines) * (E.numlines - at));
 
 	E.lines[at].len = 0;
 	E.lines[at].chars = strdup("");
 
 	E.numlines++;
-
 	E.dirty = true;
 }
 
@@ -305,10 +304,12 @@ static void delete_line(uint at) {
 	E.lines[at].chars = NULL;
 
 	if (at < LASTLINE)
-		memmove(&E.lines[at], &E.lines[at + 1],
+		memmove(E.lines + at, E.lines + at + 1,
 		        (sizeof *E.lines) * (E.numlines - (at + 1)));
 
 	E.numlines--;
+	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines));
+	if (!E.lines) DIE("realloc");
 
 	E.dirty = true;
 }
@@ -316,18 +317,20 @@ static void delete_line(uint at) {
 static void split_line(uint at, uint split_at) {
 	if (NOLINES) return;
 	if (at >= E.numlines) return;
-
 	insert_line(at + 1);
-	if (split_at >= E.lines[at].len) return;
 
-	free(E.lines[at + 1].chars);
-	uint len = E.lines[at].len - split_at;
-	E.lines[at + 1].chars = strndup(&E.lines[at].chars[split_at], len);
-	E.lines[at + 1].len = len;
+	Line *src = E.lines + at;
+	Line *dst = src + 1;
+
+	if (split_at >= src->len) return;
+
+	free(dst->chars);
+	dst->len = src->len - split_at;
+	dst->chars = strndup(src->chars + split_at, dst->len);
 
 	// Shorten original line by len
-	E.lines[at].len -= len;
-	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len);
+	src->len -= dst->len;
+	src->chars = realloc(src->chars, src->len);
 
 	E.dirty = true;
 }
@@ -336,21 +339,21 @@ static void join_lines(uint at) {
 	if (E.numlines <= 1) return;
 	if (at >= E.numlines) at = LASTLINE;
 
-	const Line *const src = &E.lines[at + 1];
-	Line *const target = &E.lines[at];
+	Line *const dst = E.lines + at;
+	const Line *const src = dst + 1;
 
 	if (src->len > 0) {
-		uint add_len = E.lines[at + 1].len;
-		const bool add_space = src->chars[0] != ' ';
-		if (add_space) add_len++;
+		const bool add_space = !isspace(src->chars[0]) &&
+		                       !isspace(dst->chars[dst->len - 1]);
+		if (add_space) dst->len++;
 
-		target->chars = realloc(target->chars, target->len + add_len);
-		if (!target->chars) DIE("realloc");
+		dst->chars = realloc(dst->chars, dst->len + src->len);
+		if (!dst->chars) DIE("realloc");
 
-		if (add_space) target->chars[target->len] = ' ';
-		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars,
-		        E.lines[at + 1].len);
-		target->len += add_len;
+		if (add_space) dst->chars[dst->len - 1] = ' ';
+		memmove(dst->chars + dst->len, src->chars, src->len);
+
+		dst->len += src->len;
 	}
 
 	delete_line(at + 1);
@@ -360,9 +363,7 @@ static void join_lines(uint at) {
 
 static void crop_line(uint at) {
 	if (NOLINES) return;
-
 	CLINE->len = at;
-
 	E.dirty = true;
 }
 
@@ -372,7 +373,7 @@ static void line_insert_char(Line *line, uint at, char c) {
 	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
 
-	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
+	memmove(&line->chars[at + 1], &line->chars[at], line->len - at);
 
 	line->chars[at] = c;
 	line->len++;
@@ -809,7 +810,7 @@ static void format_message(const char *restrict format, ...) {
 
 	int len = vsnprintf(E.message.data, size, format, ap);
 	if (len < 0) DIE("format_message");
-	E.message.len = MIN((size_t)len,  size - 1);
+	E.message.len = MIN((size_t)len, size - 1);
 
 	va_end(ap);
 }
