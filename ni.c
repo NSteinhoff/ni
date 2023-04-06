@@ -952,27 +952,16 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	return 0;
 }
 
-static uint render_tab(char *dst, const size_t size, uint len) {
-	dst[len++] = E.render_tab_characters[0];
-
-	while (len % TABSTOP && len < size)
-		dst[len++] = E.render_tab_characters[1];
-
-	return len;
-}
-
 static uint render(const Line *line, char *dst, const size_t size) {
-	uint len = 0;
-
+	uint length = 0;
 	for (uint i = 0; i < line->len && i < size - 1; i++)
-		switch (line->chars[i]) {
-		case '\t': len += render_tab(dst, size, len); break;
-		default: dst[len++] = line->chars[i]; break;
-		}
+		if (line->chars[i] == '\t') {
+			dst[length++] = E.render_tab_characters[0];
+			while (length % TABSTOP)
+				dst[length++] = E.render_tab_characters[1];
+		} else dst[length++] = line->chars[i];
 
-	dst[len] = '\0';
-
-	return len;
+	return length;
 }
 
 static void draw_line(ScreenBuffer *screen, Line *line) {
