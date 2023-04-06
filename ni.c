@@ -49,6 +49,12 @@
 		exit(EXIT_FAILURE);                                            \
 	} while (0)
 
+// Common constructs
+#define CLINE (E.lines + E.cy)
+#define NOLINES (E.numlines == 0)
+#define LASTLINE (E.numlines - 1)
+#define ENDOFLINE (CLINE->len - 1)
+
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
 typedef struct termios Term;
@@ -86,6 +92,16 @@ typedef struct Line {
 	char *chars;
 } Line;
 
+typedef struct Find {
+	char c;
+	bool forward;
+} Find;
+
+typedef struct Chord {
+	char keys[MAX_CHORD];
+	uint len;
+} Chord;
+
 typedef struct Editor {
 	// Terminal
 	Term term_orig;
@@ -110,10 +126,8 @@ typedef struct Editor {
 	bool dirty;
 
 	// Input
-	char chord[MAX_CHORD];
-	uint chord_len;
-	char find_char;
-	bool find_forward;
+	Chord chord;
+	Find find;
 
 	// Status & Messages
 	MessageBuffer message;
@@ -270,7 +284,7 @@ static void insert_line(size_t at) {
 	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
 	if (!E.lines) DIE("realloc");
 
-	if (at < E.numlines - 1)
+	if (at < LASTLINE)
 		memmove(&E.lines[at + 1], &E.lines[at],
 		        (sizeof *E.lines) * (E.numlines - at));
 
@@ -283,13 +297,13 @@ static void insert_line(size_t at) {
 }
 
 static void delete_line(uint at) {
-	if (E.numlines == 0) return;
-	if (at >= E.numlines) at = E.numlines - 1;
+	if (NOLINES) return;
+	if (at >= E.numlines) at = LASTLINE;
 
 	free(E.lines[at].chars);
 	E.lines[at].chars = NULL;
 
-	if (at < E.numlines - 1)
+	if (at < LASTLINE)
 		memmove(&E.lines[at], &E.lines[at + 1],
 		        (sizeof *E.lines) * (E.numlines - (at + 1)));
 
@@ -299,7 +313,7 @@ static void delete_line(uint at) {
 }
 
 static void split_line(uint at, uint split_at) {
-	if (E.numlines == 0) return;
+	if (NOLINES) return;
 	if (at >= E.numlines) return;
 
 	insert_line(at + 1);
@@ -320,7 +334,7 @@ static void split_line(uint at, uint split_at) {
 
 static void join_lines(uint at) {
 	if (E.numlines <= 1) return;
-	if (at >= E.numlines) at = E.numlines - 1;
+	if (at >= E.numlines) at = LASTLINE;
 
 	const Line *const src = &E.lines[at + 1];
 	Line *const target = &E.lines[at];
@@ -347,9 +361,9 @@ static void join_lines(uint at) {
 }
 
 static void crop_line(uint at) {
-	if (E.numlines == 0) return;
+	if (NOLINES) return;
 
-	E.lines[E.cy].len = at;
+	CLINE->len = at;
 
 	E.dirty = true;
 }
@@ -387,33 +401,38 @@ static void delete_chars(uint at, uint n, Line *line) {
 // ---------------------------------- Input -----------------------------------
 static void cursor_move(int c) {
 	switch (c) {
+
 	case 'k':
 	case KEY_UP: E.cy > 0 && E.cy--; break;
+
 	case 'j':
 	case KEY_DOWN:
-		if (E.numlines != 0 && E.cy < E.numlines - 1) E.cy++;
+		if (!NOLINES && E.cy < LASTLINE) E.cy++;
 		break;
+
 	case 'h':
 	case KEY_LEFT: E.cx > 0 && E.cx--; break;
+
 	case 'l':
 	case KEY_RIGHT:
-		if (E.numlines != 0 && E.cx < E.lines[E.cy].len - 1) E.cx++;
+		if (!NOLINES && E.cx < ENDOFLINE) E.cx++;
 		break;
+
 	default: return;
 	}
 
-	if (E.numlines == 0 || E.lines[E.cy].len == 0) E.cx = 0;
-	else if (E.cx >= E.lines[E.cy].len) E.cx = (uint)E.lines[E.cy].len - 1;
+	if (NOLINES || CLINE->len == 0) E.cx = 0;
+	else if (E.cx >= CLINE->len) E.cx = (uint)ENDOFLINE;
 }
 static void cursor_normalize(void) {
-	if (E.numlines == 0) {
+	if (NOLINES) {
 		E.cy = 0;
 		E.cx = 0;
 		return;
 	}
 
-	uint max_y = E.numlines - 1;
-	uint max_x = E.lines[E.cy].len == 0 ? 0 : E.lines[E.cy].len - 1;
+	uint max_y = LASTLINE;
+	uint max_x = CLINE->len == 0 ? 0 : ENDOFLINE;
 
 	if (E.cy > max_y) E.cy = max_y;
 	if (E.cx > max_x) E.cx = max_x;
@@ -422,13 +441,14 @@ static void cursor_normalize(void) {
 static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
-		format_message("\"%s\" %d lines, --%.0f%%--",
-		               E.filename ? E.filename : "[NO NAME]",
-		               E.numlines,
-		               ((double)E.cy + 1) / (double)E.numlines * 100);
+		format_message(
+			"\"%s\" %d lines, --%.0f%%--",
+			E.filename ? E.filename : "[NO NAME]", E.numlines,
+			((double)E.cy + 1) / (double)E.numlines * 100);
 	else
-		format_message("\"%s\" --No lines in buffer--",
-		               E.filename ? E.filename : "[NO NAME]");
+		format_message(
+			"\"%s\" --No lines in buffer--",
+			E.filename ? E.filename : "[NO NAME]");
 }
 
 static uint find_word(uint x, const Line *line) {
@@ -495,8 +515,8 @@ static uint find_char_in_line(uint x, const Line *line, char c, bool forward) {
 }
 
 static uint repeat_find(uint x, const Line *line, bool same_direction) {
-	bool forward = same_direction ? E.find_forward : !E.find_forward;
-	return find_char_in_line(x, line, E.find_char, forward);
+	bool forward = same_direction ? E.find.forward : !E.find.forward;
+	return find_char_in_line(x, line, E.find.c, forward);
 }
 
 static void enter_insert_mode(char c) {
@@ -504,17 +524,19 @@ static void enter_insert_mode(char c) {
 
 	switch (c) {
 	case 'a':
-		if (E.lines[E.cy].len > 0) E.cx++;
+		if (CLINE->len > 0) E.cx++;
 		break;
-	case 'A': E.cx = E.lines[E.cy].len; break;
+	case 'A': E.cx = CLINE->len; break;
 	case 'I': E.cx = 0; break;
 	}
+
 	E.mode = MODE_INSERT;
 }
 
 static void delete_motion(char c) {
-	Line *line = &E.lines[E.cy];
+	Line *line = CLINE;
 	uint start, end;
+
 	switch (c) {
 	case 'w':
 		start = E.cx;
@@ -532,8 +554,10 @@ static void delete_motion(char c) {
 		start = find_end_backwards(E.cx, line);
 		end = E.cx;
 		break;
+
 	default: return;
 	}
+
 	delete_chars(start, end - start, line);
 	E.cx = start;
 }
@@ -541,8 +565,8 @@ static void delete_motion(char c) {
 static void editor_save(void);
 
 static void process_key_normal(const int c) {
-	E.chord[E.chord_len++] = (char)c;
-	if (E.chord_len == 1) {
+	E.chord.keys[E.chord.len++] = (char)c;
+	if (E.chord.len == 1) {
 		switch (c) {
 		case 'q': quit(EXIT_SUCCESS);
 		case CTRL_KEY('q'): quit(EXIT_FAILURE);
@@ -576,18 +600,16 @@ static void process_key_normal(const int c) {
 		// Start/End of line
 		case '0': E.cx = 0; break;
 		case '$':
-			if (E.numlines) E.cx = E.lines[E.cy].len - 1;
+			if (E.numlines) E.cx = ENDOFLINE;
 			break;
 
 		// Word wise movement
-		case 'w': E.cx = find_word(E.cx, &E.lines[E.cy]); break;
-		case 'b':
-			E.cx = find_word_backwards(E.cx, &E.lines[E.cy]);
-			break;
-		case 'e': E.cx = find_end(E.cx, &E.lines[E.cy]); break;
+		case 'w': E.cx = find_word(E.cx, CLINE); break;
+		case 'b': E.cx = find_word_backwards(E.cx, CLINE); break;
+		case 'e': E.cx = find_end(E.cx, CLINE); break;
 
 		// Jumps
-		case 'G': E.cy = E.numlines - 1; break;
+		case 'G': E.cy = LASTLINE; break;
 
 		// Inserting lines
 		case 'O':
@@ -597,7 +619,7 @@ static void process_key_normal(const int c) {
 			break;
 		case 'o':
 			E.cx = 0;
-			if (E.numlines == 0) insert_line(E.cy);
+			if (NOLINES) insert_line(E.cy);
 			else insert_line(E.cy++ + 1);
 			E.mode = MODE_INSERT;
 			break;
@@ -615,13 +637,11 @@ static void process_key_normal(const int c) {
 			break;
 
 		// Delete single character
-		case 'x': delete_chars(E.cx, 1, &E.lines[E.cy]); break;
+		case 'x': delete_chars(E.cx, 1, CLINE); break;
 
 		// Search in line
 		case ';':
-		case ',':
-			E.cx = repeat_find(E.cx, &E.lines[E.cy], c == ';');
-			break;
+		case ',': E.cx = repeat_find(E.cx, CLINE, c == ';'); break;
 
 		case 'c':
 		case 'd':
@@ -632,8 +652,8 @@ static void process_key_normal(const int c) {
 
 		default: cursor_move(c); break;
 		}
-	} else if (E.chord_len == 2) {
-		switch (E.chord[0]) {
+	} else if (E.chord.len == 2) {
+		switch (E.chord.keys[0]) {
 		case 'Z':
 			switch (c) {
 			case 'Z': editor_save(); quit(EXIT_SUCCESS);
@@ -643,9 +663,7 @@ static void process_key_normal(const int c) {
 		case 'g':
 			switch (c) {
 			case 'g': E.cy = 0; break;
-			case 'e':
-				E.cx = find_end_backwards(E.cx, &E.lines[E.cy]);
-				break;
+			case 'e': E.cx = find_end_backwards(E.cx, CLINE); break;
 			}
 			break;
 
@@ -673,18 +691,17 @@ static void process_key_normal(const int c) {
 		case 'f':
 		case 'F':
 			if (isprint(c) || isblank(c)) {
-				E.find_forward = E.chord[0] == 'f';
-				E.find_char = (char)c;
-				E.cx = find_char_in_line(E.cx, &E.lines[E.cy],
-				                         E.find_char,
-				                         E.find_forward);
+				E.find.forward = E.chord.keys[0] == 'f';
+				E.find.c = (char)c;
+				E.cx = find_char_in_line(
+					E.cx, CLINE, E.find.c, E.find.forward);
 			}
 			break;
 		}
-	} else if (E.chord_len == 3) {
-		switch (E.chord[0]) {
+	} else if (E.chord.len == 3) {
+		switch (E.chord.keys[0]) {
 		case 'd':
-			switch (E.chord[1]) {
+			switch (E.chord.keys[1]) {
 			case 'g':
 				switch (c) {
 				case 'e': delete_motion('E'); break;
@@ -692,24 +709,22 @@ static void process_key_normal(const int c) {
 				break;
 			case 'f':
 				if (isprint(c) || isblank(c)) {
-					E.find_forward = true;
-					E.find_char = (char)c;
+					E.find.forward = true;
+					E.find.c = (char)c;
 					uint target = find_char_in_line(
-						E.cx, &E.lines[E.cy],
-						E.find_char, true);
-					delete_chars(E.cx, target + 1 - E.cx,
-					             &E.lines[E.cy]);
+						E.cx, CLINE, E.find.c, true);
+					delete_chars(
+						E.cx, target + 1 - E.cx, CLINE);
 				}
 				break;
 			case 'F':
 				if (isprint(c) || isblank(c)) {
-					E.find_forward = false;
-					E.find_char = (char)c;
+					E.find.forward = false;
+					E.find.c = (char)c;
 					uint target = find_char_in_line(
-						E.cx, &E.lines[E.cy],
-						E.find_char, false);
-					delete_chars(target, E.cx - target,
-					             &E.lines[E.cy]);
+						E.cx, CLINE, E.find.c, false);
+					delete_chars(
+						target, E.cx - target, CLINE);
 					E.cx = target;
 				}
 				break;
@@ -718,7 +733,7 @@ static void process_key_normal(const int c) {
 		}
 	}
 
-	E.chord_len = 0;
+	E.chord.len = 0;
 }
 
 static void process_key_insert(const int c) {
@@ -731,7 +746,7 @@ static void process_key_insert(const int c) {
 
 	case KEY_DELETE:
 		if (E.cx == 0) break;
-		delete_chars(--E.cx, 1, &E.lines[E.cy]);
+		delete_chars(--E.cx, 1, CLINE);
 		break;
 
 	case KEY_RETURN:
@@ -742,7 +757,7 @@ static void process_key_insert(const int c) {
 
 	default:
 		if (isprint(c) || isblank(c))
-			line_insert_char(&E.lines[E.cy], E.cx++, (char)c);
+			line_insert_char(CLINE, E.cx++, (char)c);
 		break;
 	}
 }
@@ -779,7 +794,7 @@ static uint cx2rx(uint cx, Line *line) {
 }
 
 static void editor_scroll(void) {
-	E.rx = E.cy < E.numlines ? cx2rx(E.cx, &E.lines[E.cy]) : E.cx;
+	E.rx = E.cy < E.numlines ? cx2rx(E.cx, CLINE) : E.cx;
 	if (E.cy < E.rowoff) E.rowoff = E.cy;
 	if ((E.cy + 1) > E.rowoff + (E.rows - NUM_UTIL_LINES))
 		E.rowoff = (E.cy + 1) - (E.rows - NUM_UTIL_LINES);
@@ -816,8 +831,8 @@ static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
 static void draw_welcome_message(ScreenBuffer *screen) {
 	uint max_len = E.cols - 1;
 	char buf[80];
-	int required_len = snprintf(buf, sizeof buf,
-	                            "ni editor -- version %s", NI_VERSION);
+	int required_len = snprintf(
+		buf, sizeof buf, "ni editor -- version %s", NI_VERSION);
 	if (required_len == -1) DIE("snprintf");
 	uint len = (uint)required_len > max_len ? max_len : (uint)required_len;
 	uint padding = (max_len - len) / 2;
@@ -829,30 +844,33 @@ static int draw_status(ScreenBuffer *screen) {
 	const int max_len = (int)E.cols;
 
 	char mode_buf[32];
-	int mode_len = snprintf(mode_buf, sizeof mode_buf - 1, " --- %s --- ",
-	                        E.mode == MODE_NORMAL ? "NORMAL" : "INSERT");
+	int mode_len = snprintf(
+		mode_buf, sizeof mode_buf - 1, " --- %s --- ",
+		E.mode == MODE_NORMAL ? "NORMAL" : "INSERT");
 	if (mode_len == -1) return -1;
 	if (mode_len < (int)sizeof mode_buf && E.mode == MODE_NORMAL) {
-		int chord_len = snprintf(mode_buf + mode_len,
-		                         sizeof mode_buf - 1 - (size_t)mode_len,
-		                         "%.*s", E.chord_len, E.chord);
+		int chord_len = snprintf(
+			mode_buf + mode_len,
+			sizeof mode_buf - 1 - (size_t)mode_len, "%.*s",
+			E.chord.len, E.chord.keys);
 		if (chord_len == -1) return -1;
 		mode_len += chord_len;
 	}
 	mode_len = mode_len > (int)sizeof mode_buf ? sizeof mode_buf : mode_len;
 
 	char cursor_buf[12];
-	int cursor_len = snprintf(cursor_buf, sizeof cursor_buf - 1, "[%d:%d]",
-	                          E.cy + 1, E.cx + 1);
+	int cursor_len = snprintf(
+		cursor_buf, sizeof cursor_buf - 1, "[%d:%d]", E.cy + 1,
+		E.cx + 1);
 	if (cursor_len == -1) return -1;
 	cursor_len = cursor_len > (int)sizeof cursor_buf ? sizeof cursor_buf
 	                                                 : cursor_len;
 
 	char filename_buf[128];
-	int filename_len =
-		snprintf(filename_buf, sizeof filename_buf - 1, "%s%s",
-	                 E.filename == NULL ? "[NO NAME]" : E.filename,
-	                 E.dirty ? " [+]" : "");
+	int filename_len = snprintf(
+		filename_buf, sizeof filename_buf - 1, "%s%s",
+		E.filename == NULL ? "[NO NAME]" : E.filename,
+		E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
 	if (filename_len > (int)sizeof filename_buf)
 		filename_len = sizeof filename_buf;
@@ -910,8 +928,9 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	int duration_len =
 		duration_us == 0
 			? 0
-			: snprintf(duration_msg, sizeof duration_msg, " %lu us",
-	                           total_microseconds(duration));
+			: snprintf(
+				  duration_msg, sizeof duration_msg, " %lu us",
+				  total_microseconds(duration));
 	if (duration_len < 0) return 0;
 
 	if ((uint)duration_len >= sizeof duration_msg)
@@ -933,23 +952,33 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	return 0;
 }
 
-static uint render(const Line *line, char *dst, size_t size) {
+static uint render_tab(char *dst, const size_t size, uint len) {
+	dst[len++] = E.render_tab_characters[0];
+
+	while (len % TABSTOP && len < size)
+		dst[len++] = E.render_tab_characters[1];
+
+	return len;
+}
+
+static uint render(const Line *line, char *dst, const size_t size) {
 	uint len = 0;
+
 	for (uint i = 0; i < line->len && i < size - 1; i++)
-		if (line->chars[i] == '\t') {
-			dst[len++] = E.render_tab_characters[0];
-			while (len % TABSTOP)
-				dst[len++] = E.render_tab_characters[1];
-		} else dst[len++] = line->chars[i];
+		switch (line->chars[i]) {
+		case '\t': len += render_tab(dst, size, len); break;
+		default: dst[len++] = line->chars[i]; break;
+		}
+
 	dst[len] = '\0';
 
 	return len;
 }
 
-static void draw_line(ScreenBuffer *screen, uint index) {
-	if (E.coloff >= E.lines[index].len) return;
-	uint rendered_len = render(&E.lines[index], E.render_buffer,
-	                           sizeof(E.render_buffer));
+static void draw_line(ScreenBuffer *screen, Line *line) {
+	if (E.coloff >= line->len) return;
+	uint rendered_len =
+		render(line, E.render_buffer, sizeof(E.render_buffer));
 	uint visible_len = rendered_len - E.coloff <= E.cols
 	                         ? (rendered_len - E.coloff)
 	                         : E.cols;
@@ -962,12 +991,12 @@ static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
 
 		if (E.rows - y == 2) draw_status(screen);
 		else if (E.rows - y == 1) draw_message(screen, duration);
-		else if (line_index < E.numlines) draw_line(screen, line_index);
+		else if (line_index < E.numlines)
+			draw_line(screen, E.lines + line_index);
 		else screen_append(screen, "~", 1);
 
 		// TODO: Welcome screen
-		if (E.numlines == 0 && y == E.rows / 3)
-			draw_welcome_message(screen);
+		if (NOLINES && y == E.rows / 3) draw_welcome_message(screen);
 
 		// Close of the line
 		screen_append(screen, "\x1b[K", 3);
@@ -1074,13 +1103,14 @@ static void editor_init(void) {
 	E.render_tab_characters[1] = '-';
 	E.message.len = 0;
 	E.dirty = false;
-	E.chord_len = 0;
+	E.chord.len = 0;
+	E.find.c = 0;
 
 	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
 }
 
-static struct timespec elapsed_time(const struct timespec *start,
-                                    const struct timespec *end) {
+static struct timespec
+elapsed_time(const struct timespec *start, const struct timespec *end) {
 	struct timespec elapsed;
 
 	elapsed.tv_sec = end->tv_sec - start->tv_sec;

@@ -88,7 +88,7 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 - searching
 - incremental search
 - add <count> to keys
-- undo / redo
+- undo / redo / dot repeat
 - autoindent
 - welcome screen listing keymaps (?)
 - command line prompt (?)
