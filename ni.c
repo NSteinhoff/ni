@@ -54,6 +54,7 @@
 #define NOLINES (E.numlines == 0)
 #define LASTLINE (E.numlines - 1)
 #define ENDOFLINE (CLINE->len - 1)
+#define MIN(A, B) (A) <= (B) ? (A) : (B)
 
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
@@ -326,8 +327,7 @@ static void split_line(uint at, uint split_at) {
 
 	// Shorten original line by len
 	E.lines[at].len -= len;
-	E.lines[at].chars[E.lines[at].len] = '\0';
-	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len + 1);
+	E.lines[at].chars = realloc(E.lines[at].chars, E.lines[at].len);
 
 	E.dirty = true;
 }
@@ -344,15 +344,13 @@ static void join_lines(uint at) {
 		const bool add_space = src->chars[0] != ' ';
 		if (add_space) add_len++;
 
-		target->chars =
-			realloc(target->chars, target->len + add_len + 1);
+		target->chars = realloc(target->chars, target->len + add_len);
 		if (!target->chars) DIE("realloc");
 
 		if (add_space) target->chars[target->len] = ' ';
 		memmove(&target->chars[target->len + 1], E.lines[at + 1].chars,
 		        E.lines[at + 1].len);
 		target->len += add_len;
-		target->chars[target->len] = '\0';
 	}
 
 	delete_line(at + 1);
@@ -371,8 +369,7 @@ static void crop_line(uint at) {
 static void line_insert_char(Line *line, uint at, char c) {
 	if (at > line->len) at = line->len;
 
-	// line->len does not include the terminating '\0'
-	line->chars = realloc(line->chars, line->len + 1 + 1);
+	line->chars = realloc(line->chars, line->len + 1);
 	if (!line->chars) DIE("realloc");
 
 	memmove(&line->chars[at + 1], &line->chars[at], line->len - at + 1);
@@ -384,15 +381,14 @@ static void line_insert_char(Line *line, uint at, char c) {
 }
 
 static void delete_chars(uint at, uint n, Line *line) {
-	// line->len does not include the terminating '\0'
 	if (line->len == 0) return;
 	if (at >= line->len) return;
 	uint end = at + n;
 
-	memmove(&line->chars[at], &line->chars[end], line->len - end + 1);
+	memmove(&line->chars[at], &line->chars[end], line->len - end);
 
 	line->len -= n;
-	line->chars = realloc(line->chars, line->len + 1);
+	line->chars = realloc(line->chars, line->len);
 	if (!line->chars) DIE("realloc");
 
 	E.dirty = true;
@@ -813,7 +809,7 @@ static void format_message(const char *restrict format, ...) {
 
 	int len = vsnprintf(E.message.data, size, format, ap);
 	if (len < 0) DIE("format_message");
-	E.message.len = (size_t)len >= size ? size - 1 : (size_t)len;
+	E.message.len = MIN((size_t)len,  size - 1);
 
 	va_end(ap);
 }
@@ -856,15 +852,15 @@ static int draw_status(ScreenBuffer *screen) {
 		if (chord_len == -1) return -1;
 		mode_len += chord_len;
 	}
-	mode_len = mode_len > (int)sizeof mode_buf ? sizeof mode_buf : mode_len;
+
+	mode_len = MIN(mode_len, (int)sizeof mode_buf);
 
 	char cursor_buf[12];
 	int cursor_len = snprintf(
 		cursor_buf, sizeof cursor_buf - 1, "[%d:%d]", E.cy + 1,
 		E.cx + 1);
 	if (cursor_len == -1) return -1;
-	cursor_len = cursor_len > (int)sizeof cursor_buf ? sizeof cursor_buf
-	                                                 : cursor_len;
+	cursor_len = MIN(cursor_len, (int)sizeof cursor_buf);
 
 	char filename_buf[128];
 	int filename_len = snprintf(
@@ -872,8 +868,7 @@ static int draw_status(ScreenBuffer *screen) {
 		E.filename == NULL ? "[NO NAME]" : E.filename,
 		E.dirty ? " [+]" : "");
 	if (filename_len == -1) return -1;
-	if (filename_len > (int)sizeof filename_buf)
-		filename_len = sizeof filename_buf;
+	filename_len = MIN(filename_len, (int)sizeof filename_buf);
 
 	const int total_len = mode_len + filename_len + cursor_len;
 	if (max_len < total_len) {
@@ -924,13 +919,9 @@ static unsigned long total_microseconds(const struct timespec *ts) {
 
 static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	char duration_msg[32];
-	unsigned long duration_us = total_microseconds(duration);
-	int duration_len =
-		duration_us == 0
-			? 0
-			: snprintf(
-				  duration_msg, sizeof duration_msg, " %lu us",
-				  total_microseconds(duration));
+	int duration_len = snprintf(
+		duration_msg, sizeof duration_msg, " %lu us",
+		total_microseconds(duration));
 	if (duration_len < 0) return 0;
 
 	if ((uint)duration_len >= sizeof duration_msg)
@@ -968,9 +959,7 @@ static void draw_line(ScreenBuffer *screen, Line *line) {
 	if (E.coloff >= line->len) return;
 	uint rendered_len =
 		render(line, E.render_buffer, sizeof(E.render_buffer));
-	uint visible_len = rendered_len - E.coloff <= E.cols
-	                         ? (rendered_len - E.coloff)
-	                         : E.cols;
+	uint visible_len = MIN(rendered_len - E.coloff, E.cols);
 	screen_append(screen, E.render_buffer + E.coloff, visible_len);
 }
 
