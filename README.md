@@ -60,8 +60,8 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
   -------
   x           delete character
   dd          delete line
-  d[motion]   delete over motion (only 'w' 'b' 'e' for now)
-  c[motion]   change over motion (only 'w' 'b' 'e' for now)
+  d[motion]   delete over motion
+  c[motion]   change over motion
   D           delete till the end of line
   C           delete till the end of line and enter insert mode
   o           insert line below and enter insert mode
@@ -84,12 +84,14 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 
 ## TODO
 
-- delete/change + motion
+- yank / cut / paste
 - searching
 - incremental search
 - add <count> to keys
 - undo / redo / dot repeat
 - autoindent
+- replace char
+- replace mode (?)
 - welcome screen listing keymaps (?)
 - command line prompt (?)
 - static memory allocation (?)

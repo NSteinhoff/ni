@@ -670,6 +670,14 @@ static void process_key_normal(const int c) {
 			case 'w':
 			case 'e':
 			case 'b': delete_motion((char)c); break;
+			case '0':
+				delete_chars(0, E.cx, CLINE);
+				E.cx = 0;
+				break;
+			case '$':
+				delete_chars(E.cx, CLINE->len - E.cx, CLINE);
+				if (E.cx > 0) E.cx--;
+				break;
 			case 'f':
 			case 'F':
 			case 'g': return;
@@ -681,7 +689,15 @@ static void process_key_normal(const int c) {
 			case 'w':
 			case 'e':
 			case 'b': delete_motion((char)c); break;
+			case '0':
+				delete_chars(0, E.cx, CLINE);
+				E.cx = 0;
+				break;
+			case '$':
+				delete_chars(E.cx, CLINE->len - E.cx, CLINE);
+				break;
 			}
+
 			enter_insert_mode('i');
 			break;
 
