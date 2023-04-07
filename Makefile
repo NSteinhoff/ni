@@ -1,5 +1,5 @@
 CC     := clang
-CFLAGS := -std=c17 -g -Werror -Wall -Wextra -Weverything -pedantic
+CFLAGS := -std=c17 -g -Werror -Wall -Wextra -pedantic
 CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded -Wno-unsafe-buffer-usage
 MAX_LINES := 1000
 
@@ -26,3 +26,7 @@ uninstall:
 clean:
 	-rm -f ni
 .PHONY: clean
+
+leaks:
+	@leaks -atExit -quiet -readonlyContent -- ni test.txt
+.PHONY: leaks
