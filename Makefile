@@ -26,3 +26,7 @@ uninstall:
 clean:
 	-rm -f ni
 .PHONY: clean
+
+leaks:
+	@leaks -atExit -quiet -readonlyContent -- ni test.txt
+.PHONY: leaks
