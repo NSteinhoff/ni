@@ -30,7 +30,7 @@ static LineStorage *freelist = NULL;
 // ------------------------------ State & Data --------------------------------
 Editor E;
 
-char *get_line_storage(void) {
+static char *get_line_storage(void) {
 	if (freelist == NULL) return NULL;
 	char *chars = freelist->chars;
 	freelist = freelist->next;
@@ -38,22 +38,25 @@ char *get_line_storage(void) {
 	return chars;
 }
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-align"
 static void free_line_storage(char *chars) {
 	LineStorage *next = freelist;
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-align"
 	freelist = (LineStorage *)chars;
+#pragma clang diagnostic pop
+
 	freelist->next = next;
 }
-#pragma clang diagnostic pop
 
 // --------------------------------- Editing ----------------------------------
 static void format_message(const char *restrict format, ...);
-static Line *insert_line(size_t at) {
+Line *insert_line(uint at) {
 	char *chars = get_line_storage();
 	if (chars == NULL) {
-		format_message("Maximum number of lines reached.");
+		strncpy(E.message, "Maximum number of lines reached.",
+		        sizeof E.message);
+		E.message[(sizeof E.message) - 1] = '\0';
 		return NULL;
 	}
 
@@ -70,6 +73,14 @@ static Line *insert_line(size_t at) {
 	E.dirty = true;
 
 	return E.lines + at;
+}
+
+int set_line(Line *line, const char *chars, uint len) {
+	len = MIN(len, MAX_LINE_LEN);
+	strncpy(line->chars, chars, len);
+	line->len = len;
+
+	return 0;
 }
 
 static void delete_line(uint at) {
@@ -98,8 +109,6 @@ static Line *split_line(uint at, uint split_at) {
 	Line *src = E.lines + at;
 	dst->len = src->len - split_at;
 	strncpy(dst->chars, src->chars + split_at, dst->len);
-
-	// Shorten original line by len
 	src->len -= dst->len;
 
 	E.dirty = true;
@@ -572,9 +581,8 @@ static void format_message(const char *restrict format, ...) {
 	va_list ap;
 	va_start(ap, format);
 
-	int len = vsnprintf(E.message.data, size, format, ap);
+	int len = vsnprintf(E.message, size, format, ap);
 	if (len < 0) DIE("format_message");
-	E.message.len = MIN((size_t)len, size - 1);
 
 	va_end(ap);
 }
@@ -599,7 +607,6 @@ void editor_init(uint rows, uint cols) {
 	E.cx = E.cy = E.rx = 0;
 	E.render_tab_characters[0] = '>';
 	E.render_tab_characters[1] = '-';
-	E.message.len = 0;
 	E.dirty = false;
 	E.chord.len = 0;
 	E.find.c = 0;

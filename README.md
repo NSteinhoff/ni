@@ -94,7 +94,6 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 - replace mode (?)
 - welcome screen listing keymaps (?)
 - command line prompt (?)
-- static memory allocation (?)
 - debug layer (?)
 - syntax highlighting (?)
 - setting options (?)

@@ -3,7 +3,6 @@
 #include <stdarg.h>  // va_list, va_start, va_end
 #include <stdbool.h> // bool, true, false
 #include <stdio.h>   // fopen, fclose, perror, sys_nerr
-#include <stdio.h>   // fopen, fclose, perror, sys_nerr
 #include <stdlib.h>  // exit, atexit
 #include <string.h>  // memcpy, strncpy
 #include <termios.h> // struct termios, tcsetattr, tcgetattr, TCSANOW, BRKINT, ICRNL, INPCK, ISTRIP, IXON, OPOST, CS8, ECHO, ICANON, ISIG, IEXTEN
@@ -38,7 +37,14 @@
 		exit(EXIT_FAILURE);                                            \
 	} while (0)
 
-// Terminal
+typedef struct ScreenBuffer {
+	char data[MAX_SCREEN_LEN];
+	size_t len;
+} ScreenBuffer;
+
+static ScreenBuffer screen;
+static char render_buffer[MAX_RENDER];
+
 static struct termios term_orig;
 static struct termios term;
 
@@ -331,11 +337,10 @@ static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
 	int remaining = (int)E.cols - duration_len;
 	if (remaining < 0) return 0;
 
-	if (E.message.len > 0) {
-		size_t len = (size_t)(E.message.len > (size_t)remaining
-		                              ? (size_t)remaining
-		                              : E.message.len);
-		screen_append(screen, E.message.data, len);
+	size_t message_len = strlen(E.message);
+	if (message_len > 0) {
+		size_t len = MIN(message_len, (size_t)remaining);
+		screen_append(screen, E.message, len);
 		remaining -= len;
 	}
 	while (remaining--) screen_append(screen, " ", 1);
@@ -358,10 +363,9 @@ static uint render(const Line *line, char *dst, const size_t size) {
 
 static void draw_line(ScreenBuffer *screen, Line *line) {
 	if (E.coloff >= line->len) return;
-	uint rendered_len =
-		render(line, E.render_buffer, sizeof(E.render_buffer));
+	uint rendered_len = render(line, render_buffer, sizeof(render_buffer));
 	uint visible_len = MIN(rendered_len - E.coloff, E.cols);
-	screen_append(screen, E.render_buffer + E.coloff, visible_len);
+	screen_append(screen, render_buffer + E.coloff, visible_len);
 }
 
 static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
@@ -384,16 +388,16 @@ static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
 }
 
 static void refresh_screen(const struct timespec *duration) {
-	E.screen.len = 0;
+	screen.len = 0;
 	editor_scroll();
-	screen_append(&E.screen, "\x1b[?25l", 6); // hide cursor
+	screen_append(&screen, "\x1b[?25l", 6); // hide cursor
 
-	place_cursor(&E.screen, 0, 0);
-	draw_lines(&E.screen, duration);
-	place_cursor(&E.screen, E.rx - E.coloff, E.cy - E.rowoff);
+	place_cursor(&screen, 0, 0);
+	draw_lines(&screen, duration);
+	place_cursor(&screen, E.rx - E.coloff, E.cy - E.rowoff);
 
-	screen_append(&E.screen, "\x1b[?25h", 6); // show cursor
-	write(STDOUT_FILENO, E.screen.data, E.screen.len);
+	screen_append(&screen, "\x1b[?25h", 6); // show cursor
+	write(STDOUT_FILENO, screen.data, screen.len);
 }
 
 static void handle_resize(int sig) {
@@ -404,33 +408,25 @@ static void handle_resize(int sig) {
 
 // -------------------------------- File I/O ----------------------------------
 static int editor_append_line(const char *chars, uint len) {
-	uint i = E.numlines;
-	E.lines[i].chars = get_line_storage();
-
-	if (E.lines[i].chars == NULL) return -1;
-
-	strncpy(E.lines[i].chars, chars, len);
-	E.lines[i].len = len;
-	E.numlines++;
-
-	return 0;
+	Line *line = insert_line(E.numlines);
+	if (!line) return -1;
+	return set_line(line, chars, len);
 }
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
 static void format_message(const char *restrict format, ...) {
 	size_t size = MAX_MESSAGE_LEN;
 
 	va_list ap;
 	va_start(ap, format);
 
-	int len = vsnprintf(E.message.data, size, format, ap);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+	int len = vsnprintf(E.message, size, format, ap);
+#pragma clang diagnostic pop
 	if (len < 0) DIE("format_message");
-	E.message.len = MIN((size_t)len, size - 1);
 
 	va_end(ap);
 }
-#pragma clang diagnostic pop
 
 static void editor_open(const char *restrict fname) {
 	FILE *f = fopen(fname, "r");

@@ -40,11 +40,6 @@ typedef enum EditorKey {
 	KEY_NOOP,
 } EditorKey;
 
-typedef struct ScreenBuffer {
-	char data[MAX_SCREEN_LEN];
-	size_t len;
-} ScreenBuffer;
-
 typedef struct MessageBuffer {
 	char data[MAX_MESSAGE_LEN];
 	size_t len;
@@ -84,6 +79,9 @@ typedef struct Editor {
 	// Mode
 	EditorMode mode;
 
+	// Status & Messages
+	char message[MAX_MESSAGE_LEN];
+
 	// File
 	char filename[MAX_FILENAME];
 	bool dirty;
@@ -92,25 +90,13 @@ typedef struct Editor {
 	Chord chord;
 	Find find;
 
-	// Status & Messages
-	MessageBuffer message;
-
-	// Rendering
-	// Screen i.e draw buffer. The output is written to this buffer so that
-	// it can be send to the screen in a single call to avoid flickering.
-	ScreenBuffer screen;
-
-	// Renders individual lines before printing them to the screen.
-	// TODO: Do we even need this buffer? Why not render straight to the
-	// screen?
-	char render_buffer[MAX_RENDER];
-
 	// Settings
 	char render_tab_characters[2];
 } Editor;
 
-extern void process_key(int key);
 extern void editor_init(uint rows, uint cols);
-extern char *get_line_storage(void);
+extern void process_key(int key);
+extern Line *insert_line(uint at);
+extern int set_line(Line* line, const char *chars, uint len);
 
 extern Editor E;
