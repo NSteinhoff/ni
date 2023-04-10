@@ -3,16 +3,19 @@ CFLAGS := -std=c17 -g -Werror -Wall -Wextra -Weverything -pedantic
 CFLAGS += -Wno-shadow -Wno-declaration-after-statement -Wno-padded -Wno-unsafe-buffer-usage
 MAX_LINES := 1000
 
-ni: ni.c
-	@grep -hv -e '^$$' -e '^//' ni.c | wc -l | (read n _; \
+ni: term.c ni.o
+	@cat ni.c term.c | grep -hv -e '^$$' -e '^//' | wc -l | (read n _; \
 		echo Lines: $$n; \
 		[ "$$n" -lt ${MAX_LINES} ] \
 		|| (echo "Too many lines. Maximum number of lines is ${MAX_LINES}" && false) \
 	)
-	$(CC) $(CFLAGS) -o ni $<
+	$(CC) $(CFLAGS) -o ni $^
+
+ni.o: ni.c ni.h
+	$(CC) $(CFLAGS) -c ni.c
 
 check:
-	$(CC) $(CFLAGS) -fsyntax-only ni.c
+	$(CC) $(CFLAGS) -fsyntax-only term.c ni.c
 .PHONY: check
 
 install: ni
@@ -24,7 +27,7 @@ uninstall:
 .PHONY: uninstall
 
 clean:
-	-rm -f ni
+	-rm -f ni ni.o
 .PHONY: clean
 
 leaks:

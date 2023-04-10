@@ -102,3 +102,23 @@ Based on the [Antirez' Kilo editor](http://antirez.com/news/108).
 - multiple buffers & load file (?)
 - line wrapping (?)
 - suspend & resume (?)
+
+---
+
+## WEB & PWA
+
+At some point I would like to separate the core editor from the platform layer.
+Rendering will then be done by the platform. This will eventually enable
+targeting WASM and the web, but that will require reimplementing some of the
+standard library functions as well as either switching to static memory
+allocation, or implementing an allocator for each platform. I would like to keep
+the JS layer as thin as possible.
+
+One use case for the Web target is a browser extension that can be used to edit
+text input fields using **ni**. Another could be a sandboxed PWA, where you
+drag-n-drop files / folders for editing. Both interesting things to play around
+with.
+
+There are some projects that port Vim to WASM. Check those for inspiration. For
+high fidelity font rendering, I think that using DOM elements might be preferred
+over a 2D canvas.

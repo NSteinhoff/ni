@@ -1,338 +1,110 @@
 // -------------------------------- Includes ----------------------------------
-#include <ctype.h>   // isnumber, isblank, isprint, isspace, isalnum
-#include <errno.h>   // errno
-#include <signal.h>  // signal, SIGWINCH
+#include <ctype.h>   // isblank, isprint, isspace, isalnum
 #include <stdarg.h>  // va_list, va_start, va_end
 #include <stdbool.h> // bool, true, false
-#include <stdio.h>   // fopen, fclose, perror, sys_nerr
-#include <stdlib.h>  // realloc, free, exit, atexit
-#include <string.h>  // strndup, strdup, memmove
-#include <termios.h> // struct termios, tcsetattr, tcgetattr, TCSANOW, BRKINT, ICRNL, INPCK, ISTRIP, IXON, OPOST, CS8, ECHO, ICANON, ISIG, IEXTEN
-#include <time.h>    // timespec_get, struct timespec, TIME_UTC
-#include <unistd.h>  // write, read, STDIN_FILENO, STDOUT_FILENO
+#include <stdio.h>   // vsnprintf
+#include <string.h>  // memmove
+
+#include "ni.h"
+
+typedef union LineStorage LineStorage;
+union LineStorage {
+	LineStorage *next;
+	char chars[MAX_LINE_LEN];
+};
+
+static LineStorage line_pool[MAX_LINES];
+static LineStorage *freelist = NULL;
 
 // --------------------------------- Defines ----------------------------------
-#define NI_VERSION "0.0.1"
-
-#define NORETURN __attribute__((noreturn)) void
-
-#define MAX_SCREEN_LEN 1 << 16
-#define MAX_RENDER 1024
-#define MAX_MESSAGE_LEN 256
-#define MAX_CHORD 3 // d[ge] or d[f..]
-#define TABSTOP 8
-#define NUM_UTIL_LINES 2
+#define DIE(MSG)                                                               \
+	do {                                                                   \
+		E.quit = true;                                                 \
+		E.status = 1;                                                  \
+		E.error = MSG;                                                 \
+	} while (0)
 
 // Mask 00011111 i.e. zero out the upper three bits
 #define CTRL_KEY(k) ((k)&0x1f)
 
-// Input / output
-#define READ(C) (read(STDIN_FILENO, &(C), 1) == 1)
-#define SEND_ESCAPE(C)                                                         \
-	(write(STDOUT_FILENO, (C), sizeof(C) - 1) == sizeof(C) - 1)
-
-// Error handling / Debugging
-#define STR(A) #A
-
-#define PERROR_(F, L, S)                                                       \
-	do {                                                                   \
-		if (errno >= 0 && errno < sys_nerr)                            \
-			perror(F ":" STR(L) " " S);                            \
-		else printf("%s:%d %s\n", F, L, S);                            \
-	} while (0)
-#define PERROR(S) PERROR_(__FILE__, __LINE__, S)
-
-#define DIE(S)                                                                 \
-	do {                                                                   \
-		clear_screen();                                                \
-		PERROR(S);                                                     \
-		exit(EXIT_FAILURE);                                            \
-	} while (0)
-
-// Common constructs
-#define CLINE (E.lines + E.cy)
-#define NOLINES (E.numlines == 0)
-#define LASTLINE (E.numlines - 1)
-#define ENDOFLINE (CLINE->len - 1)
-#define MIN(A, B) (A) <= (B) ? (A) : (B)
-
-// ---------------------------------- Types -----------------------------------
-typedef unsigned int uint;
-typedef struct termios Term;
-
-typedef enum EditorMode {
-	MODE_NORMAL,
-	MODE_INSERT,
-} EditorMode;
-
-typedef enum EditorKey {
-	KEY_UP = 1000,
-	KEY_DOWN,
-	KEY_LEFT,
-	KEY_RIGHT,
-	KEY_PAGE_UP,
-	KEY_PAGE_DOWN,
-	KEY_DELETE,
-	KEY_RETURN,
-	KEY_ESCAPE,
-	KEY_NOOP,
-} EditorKey;
-
-typedef struct ScreenBuffer {
-	char data[MAX_SCREEN_LEN];
-	size_t len;
-} ScreenBuffer;
-
-typedef struct MessageBuffer {
-	char data[MAX_MESSAGE_LEN];
-	size_t len;
-} MessageBuffer;
-
-typedef struct Line {
-	uint len;
-	char *chars;
-} Line;
-
-typedef struct Find {
-	char c;
-	bool forward;
-} Find;
-
-typedef struct Chord {
-	char keys[MAX_CHORD];
-	uint len;
-} Chord;
-
-typedef struct Editor {
-	// Terminal
-	Term term_orig;
-	Term term;
-
-	// Lines
-	Line *lines;
-	uint numlines;
-
-	// Cursor
-	uint cx, cy, rx;
-
-	// Viewport
-	uint rowoff, coloff;
-	uint rows, cols;
-
-	// Mode
-	EditorMode mode;
-
-	// File
-	char *filename;
-	bool dirty;
-
-	// Input
-	Chord chord;
-	Find find;
-
-	// Status & Messages
-	MessageBuffer message;
-
-	// Rendering
-	// Screen i.e draw buffer. The output is written to this buffer so that
-	// it can be send to the screen in a single call to avoid flickering.
-	ScreenBuffer screen;
-	// Renders individual lines before printing them to the screen.
-	// TODO: Do we even need this buffer? Why not render straight to the
-	// screen?
-	char render_buffer[MAX_RENDER];
-
-	// Settings
-	char render_tab_characters[2];
-} Editor;
-
 // ------------------------------ State & Data --------------------------------
-static Editor E;
+Editor E;
 
-// -------------------------------- Terminal ----------------------------------
-static void clear_screen(void) {
-	SEND_ESCAPE("\x1b[2J");
-	SEND_ESCAPE("\x1b[H");
+char *get_line_storage(void) {
+	if (freelist == NULL) return NULL;
+	char *chars = freelist->chars;
+	freelist = freelist->next;
+
+	return chars;
 }
 
-static NORETURN quit(int code) {
-	clear_screen();
-	exit(code);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-align"
+static void free_line_storage(char *chars) {
+	LineStorage *next = freelist;
+
+	freelist = (LineStorage *)chars;
+	freelist->next = next;
 }
-
-static void reset_term(void) {
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term_orig) == -1)
-		DIE("tcsetattr");
-}
-
-static void enable_immediate_mode(void) {
-	E.term.c_cc[VMIN] = 0;
-	E.term.c_cc[VTIME] = 0;
-
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
-}
-
-static void enable_block_mode(void) {
-	E.term.c_cc[VMIN] = 1;
-	E.term.c_cc[VTIME] = 0;
-
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
-}
-
-static void enable_raw_mode(void) {
-	// Save terminal settings and setup cleanup on exit.
-	if (tcgetattr(STDIN_FILENO, &E.term_orig) == -1) DIE("tcgetattr");
-	atexit(reset_term);
-
-	// Set terminal to raw mode.
-	E.term = E.term_orig;
-	E.term.c_iflag &= ~(uint)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-	E.term.c_oflag &= ~(uint)(OPOST);
-	E.term.c_cflag |= (uint)(CS8);
-	E.term.c_lflag &= ~(uint)(ECHO | ICANON | ISIG | IEXTEN);
-	E.term.c_cc[VMIN] = 1;
-	E.term.c_cc[VTIME] = 0;
-
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &E.term) == -1) DIE("tcsetattr");
-}
-
-static int read_escape_sequence(void) {
-	enable_immediate_mode();
-	EditorKey key = KEY_ESCAPE;
-	char seq[3];
-
-	if (!READ(seq[0])) goto outro;
-	if (!READ(seq[1])) goto outro;
-	if (seq[0] != '[') goto outro;
-
-	switch (seq[1]) {
-	case 'A': key = KEY_UP; goto outro;
-	case 'B': key = KEY_DOWN; goto outro;
-	case 'D': key = KEY_LEFT; goto outro;
-	case 'C': key = KEY_RIGHT; goto outro;
-	}
-
-	if (isnumber(seq[1]) && READ(seq[2]) && seq[2] == '~') switch (seq[1]) {
-		case '3': key = KEY_DELETE; goto outro;
-		case '5': key = KEY_PAGE_UP; goto outro;
-		case '6': key = KEY_PAGE_DOWN; goto outro;
-		}
-
-outro:
-	enable_block_mode();
-	return (int)key;
-}
-
-static int read_key(void) {
-	char c;
-	if (!READ(c)) return KEY_NOOP;
-
-	switch (c) {
-	case 13: return KEY_RETURN;
-
-	case 8:
-	case 127: return KEY_DELETE;
-
-	case '\x1b': return read_escape_sequence();
-
-	default: return c;
-	}
-}
-
-static int get_cursor_position(uint *rows, uint *cols) {
-	// Solicit device report
-	if (!SEND_ESCAPE("\x1b[6n")) return -1;
-
-	// Read device report: \x1b[<rows>;<cols>R
-	char buf[32];
-	uint i = 0;
-	while (i < sizeof buf - 1) {
-		if (!READ(buf[i])) return -1;
-		if (buf[i++] == 'R') break;
-	}
-	buf[i] = '\0';
-
-	if (buf[0] != '\x1b' || buf[1] != '[') return -1;
-	if (sscanf(&buf[1], "[%d;%dR", rows, cols) != 2) return -1;
-
-	return 0;
-}
-
-static int get_window_size(uint *rows, uint *cols) {
-	// Reset cursor to home
-	if (!SEND_ESCAPE("\x1b[H")) return -1;
-
-	// Move to end
-	if (!SEND_ESCAPE("\x1b[999C\x1b[999B")) return -1;
-	if (get_cursor_position(rows, cols) == -1) return -1;
-
-	return 0;
-}
-
-// ---------------------------------- Misc ------------------------------------
-static struct timespec get_current_time(void) {
-	struct timespec ts;
-
-	if (timespec_get(&ts, TIME_UTC) == 0) DIE("timespec_get");
-
-	return ts;
-}
+#pragma clang diagnostic pop
 
 // --------------------------------- Editing ----------------------------------
-static void insert_line(size_t at) {
-	if (at > E.numlines) at = E.numlines;
+static void format_message(const char *restrict format, ...);
+static Line *insert_line(size_t at) {
+	char *chars = get_line_storage();
+	if (chars == NULL) {
+		format_message("Maximum number of lines reached.");
+		return NULL;
+	}
 
-	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines + 1));
-	if (!E.lines) DIE("realloc");
+	if (at > E.numlines) at = E.numlines;
 
 	if (at <= LASTLINE)
 		memmove(E.lines + at + 1, E.lines + at,
 		        (sizeof *E.lines) * (E.numlines - at));
 
+	E.lines[at].chars = chars;
 	E.lines[at].len = 0;
-	E.lines[at].chars = strdup("");
 
 	E.numlines++;
 	E.dirty = true;
+
+	return E.lines + at;
 }
 
 static void delete_line(uint at) {
 	if (NOLINES) return;
 	if (at >= E.numlines) at = LASTLINE;
 
-	free(E.lines[at].chars);
-	E.lines[at].chars = NULL;
+	free_line_storage(E.lines[at].chars);
 
 	if (at < LASTLINE)
 		memmove(E.lines + at, E.lines + at + 1,
 		        (sizeof *E.lines) * (E.numlines - (at + 1)));
 
 	E.numlines--;
-	E.lines = realloc(E.lines, (sizeof *E.lines) * (E.numlines));
-	if (!E.lines) DIE("realloc");
 
 	E.dirty = true;
 }
 
-static void split_line(uint at, uint split_at) {
-	if (NOLINES) return;
-	if (at >= E.numlines) return;
-	insert_line(at + 1);
+static Line *split_line(uint at, uint split_at) {
+	if (NOLINES) return NULL;
+	if (at >= E.numlines) return NULL;
+	if (split_at >= E.lines[at].len) return NULL;
+
+	Line *dst = insert_line(at + 1);
+	if (dst == NULL) return NULL;
 
 	Line *src = E.lines + at;
-	Line *dst = src + 1;
-
-	if (split_at >= src->len) return;
-
-	free(dst->chars);
 	dst->len = src->len - split_at;
-	dst->chars = strndup(src->chars + split_at, dst->len);
+	strncpy(dst->chars, src->chars + split_at, dst->len);
 
 	// Shorten original line by len
 	src->len -= dst->len;
-	src->chars = realloc(src->chars, src->len);
 
 	E.dirty = true;
+
+	return dst;
 }
 
 static void join_lines(uint at) {
@@ -346,9 +118,6 @@ static void join_lines(uint at) {
 		const bool add_space = !isspace(src->chars[0]) &&
 		                       !isspace(dst->chars[dst->len - 1]);
 		if (add_space) dst->len++;
-
-		dst->chars = realloc(dst->chars, dst->len + src->len);
-		if (!dst->chars) DIE("realloc");
 
 		if (add_space) dst->chars[dst->len - 1] = ' ';
 		memmove(dst->chars + dst->len, src->chars, src->len);
@@ -369,14 +138,11 @@ static void crop_line(uint at) {
 
 static void line_insert_char(Line *line, uint at, char c) {
 	if (at > line->len) at = line->len;
+	if (line->len < MAX_LINE_LEN) line->len++;
 
-	line->chars = realloc(line->chars, line->len + 1);
-	if (!line->chars) DIE("realloc");
-
-	memmove(&line->chars[at + 1], &line->chars[at], line->len - at);
+	memmove(&line->chars[at + 1], &line->chars[at], line->len - at - 1);
 
 	line->chars[at] = c;
-	line->len++;
 
 	E.dirty = true;
 }
@@ -389,8 +155,6 @@ static void delete_chars(uint at, uint n, Line *line) {
 	memmove(&line->chars[at], &line->chars[end], line->len - end);
 
 	line->len -= n;
-	line->chars = realloc(line->chars, line->len);
-	if (!line->chars) DIE("realloc");
 
 	E.dirty = true;
 }
@@ -435,17 +199,17 @@ static void cursor_normalize(void) {
 	if (E.cx > max_x) E.cx = max_x;
 }
 
-static void format_message(const char *restrict format, ...);
 static void show_file_info(void) {
 	if (E.numlines > 0)
 		format_message(
 			"\"%s\" %d lines, --%.0f%%--",
-			E.filename ? E.filename : "[NO NAME]", E.numlines,
+			E.filename[0] == '\0' ? E.filename : "[NO NAME]",
+			E.numlines,
 			((double)E.cy + 1) / (double)E.numlines * 100);
 	else
 		format_message(
 			"\"%s\" --No lines in buffer--",
-			E.filename ? E.filename : "[NO NAME]");
+			E.filename[0] == '\0' ? E.filename : "[NO NAME]");
 }
 
 static uint find_word(uint x, const Line *line) {
@@ -517,13 +281,14 @@ static uint repeat_find(uint x, const Line *line, bool same_direction) {
 }
 
 static void enter_insert_mode(char c) {
-	if (!E.numlines) insert_line(0);
+	if (!E.numlines)
+		if (!insert_line(0)) return;
 
 	switch (c) {
 	case 'a':
 		if (CLINE->len > 0) E.cx++;
 		break;
-	case 'A': E.cx = CLINE->len; break;
+	case 'A': E.cx = MIN(CLINE->len, MAX_LINE_LEN - 1); break;
 	case 'I': E.cx = 0; break;
 	}
 
@@ -559,15 +324,18 @@ static void delete_motion(char c) {
 	E.cx = start;
 }
 
-static void editor_save(void);
+static void quit(int status) {
+	E.status = status;
+	E.quit = true;
+}
 
 static void process_key_normal(const int c) {
 	E.chord.keys[E.chord.len++] = (char)c;
 	if (E.chord.len == 1) {
 		switch (c) {
-		case 'q': quit(EXIT_SUCCESS);
-		case CTRL_KEY('q'): quit(EXIT_FAILURE);
-		case CTRL_KEY('s'): editor_save(); break;
+		case 'q': quit(0); return;
+		case CTRL_KEY('q'): quit(1); return;
+		case CTRL_KEY('s'): E.save = true; break;
 		case CTRL_KEY('g'): show_file_info(); break;
 
 		// Enter INSERT mode
@@ -610,15 +378,17 @@ static void process_key_normal(const int c) {
 
 		// Inserting lines
 		case 'O':
-			E.cx = 0;
-			insert_line(E.cy);
-			E.mode = MODE_INSERT;
+			if (insert_line(E.cy)) {
+				E.cx = 0;
+				E.mode = MODE_INSERT;
+			}
 			break;
 		case 'o':
-			E.cx = 0;
-			if (NOLINES) insert_line(E.cy);
-			else insert_line(E.cy++ + 1);
-			E.mode = MODE_INSERT;
+			if (insert_line(NOLINES ? 0 : E.cy + 1)) {
+				E.cx = 0;
+				if (E.cy != LASTLINE) E.cy++;
+				E.mode = MODE_INSERT;
+			}
 			break;
 
 		// Join lines
@@ -653,8 +423,11 @@ static void process_key_normal(const int c) {
 		switch (E.chord.keys[0]) {
 		case 'Z':
 			switch (c) {
-			case 'Z': editor_save(); quit(EXIT_SUCCESS);
-			case 'Q': quit(EXIT_SUCCESS);
+			case 'Z':
+				E.save = true;
+				quit(0);
+				return;
+			case 'Q': quit(1); return;
 			}
 
 		case 'g':
@@ -763,22 +536,22 @@ static void process_key_insert(const int c) {
 		break;
 
 	case KEY_RETURN:
-		split_line(E.cy, E.cx);
-		E.cy++;
-		E.cx = 0;
+		if (split_line(E.cy, E.cx)) {
+			E.cy++;
+			E.cx = 0;
+		}
 		break;
 
 	default:
-		if (isprint(c) || isblank(c))
-			line_insert_char(CLINE, E.cx++, (char)c);
+		if (isprint(c) || isblank(c)) {
+			line_insert_char(CLINE, E.cx, (char)c);
+			if (E.cx < ENDOFLINE) E.cx++;
+		}
 		break;
 	}
 }
 
-static struct timespec process_key(void) {
-	int key = read_key();
-	struct timespec key_received_at = get_current_time();
-
+void process_key(int key) {
 	switch (E.mode) {
 	case MODE_NORMAL: {
 		process_key_normal(key);
@@ -788,31 +561,6 @@ static struct timespec process_key(void) {
 		process_key_insert(key);
 	} break;
 	}
-
-	return key_received_at;
-}
-
-static uint cx2rx(uint cx, Line *line) {
-	if (!line->len) return cx;
-
-	const char *chars = line->chars;
-	uint rx = 0;
-
-	for (uint i = 0; i < cx; i++) {
-		if (chars[i] == '\t') rx += TABSTOP - (rx % TABSTOP);
-		else rx++;
-	}
-
-	return rx;
-}
-
-static void editor_scroll(void) {
-	E.rx = E.cy < E.numlines ? cx2rx(E.cx, CLINE) : E.cx;
-	if (E.cy < E.rowoff) E.rowoff = E.cy;
-	if ((E.cy + 1) > E.rowoff + (E.rows - NUM_UTIL_LINES))
-		E.rowoff = (E.cy + 1) - (E.rows - NUM_UTIL_LINES);
-	if (E.rx < E.coloff) E.coloff = E.rx;
-	if ((E.rx + 1) > E.coloff + E.cols) E.coloff = (E.rx + 1) - E.cols;
 }
 
 // --------------------------------- Output -----------------------------------
@@ -832,265 +580,20 @@ static void format_message(const char *restrict format, ...) {
 }
 #pragma clang diagnostic pop
 
-static int screen_append(ScreenBuffer *screen, const char s[], size_t len) {
-	if (screen->len + len > MAX_SCREEN_LEN) return -1;
-
-	memcpy(&screen->data[screen->len], s, len);
-	screen->len += len;
-
-	return 0;
-}
-
-static void draw_welcome_message(ScreenBuffer *screen) {
-	uint max_len = E.cols - 1;
-	char buf[80];
-	int required_len = snprintf(
-		buf, sizeof buf, "ni editor -- version %s", NI_VERSION);
-	if (required_len == -1) DIE("snprintf");
-	uint len = (uint)required_len > max_len ? max_len : (uint)required_len;
-	uint padding = (max_len - len) / 2;
-	while (padding--) screen_append(screen, " ", 1);
-	screen_append(screen, buf, len);
-}
-
-static int draw_status(ScreenBuffer *screen) {
-	const int max_len = (int)E.cols;
-
-	char mode_buf[32];
-	int mode_len = snprintf(
-		mode_buf, sizeof mode_buf - 1, " --- %s --- ",
-		E.mode == MODE_NORMAL ? "NORMAL" : "INSERT");
-	if (mode_len == -1) return -1;
-	if (mode_len < (int)sizeof mode_buf && E.mode == MODE_NORMAL) {
-		int chord_len = snprintf(
-			mode_buf + mode_len,
-			sizeof mode_buf - 1 - (size_t)mode_len, "%.*s",
-			E.chord.len, E.chord.keys);
-		if (chord_len == -1) return -1;
-		mode_len += chord_len;
-	}
-
-	mode_len = MIN(mode_len, (int)sizeof mode_buf);
-
-	char cursor_buf[12];
-	int cursor_len = snprintf(
-		cursor_buf, sizeof cursor_buf - 1, "[%d:%d]", E.cy + 1,
-		E.cx + 1);
-	if (cursor_len == -1) return -1;
-	cursor_len = MIN(cursor_len, (int)sizeof cursor_buf);
-
-	char filename_buf[128];
-	int filename_len = snprintf(
-		filename_buf, sizeof filename_buf - 1, "%s%s",
-		E.filename == NULL ? "[NO NAME]" : E.filename,
-		E.dirty ? " [+]" : "");
-	if (filename_len == -1) return -1;
-	filename_len = MIN(filename_len, (int)sizeof filename_buf);
-
-	const int total_len = mode_len + filename_len + cursor_len;
-	if (max_len < total_len) {
-		char msg[] = "!!! ERROR: Status too long !!!";
-		screen_append(screen, msg, sizeof msg);
-		return -1;
-	}
-
-	// clang-format off
-	struct { char *s;  int len; } parts[] = {
-		{mode_buf,     mode_len},
-		{filename_buf, filename_len},
-		{cursor_buf,   cursor_len}
-	};
-	// clang-format on
-
-	const int n_parts = sizeof parts / sizeof parts[0];
-	const int padding = (max_len - total_len) / (n_parts - 1);
-	int remaining = max_len;
-
-	screen_append(screen, "\x1b[7m", 4);
-	for (int i = 0; i < n_parts; i++) {
-		const char *part = parts[i].s;
-		const uint len = (uint)parts[i].len;
-
-		remaining -= len;
-		if (i > 0) {
-			int pad = padding;
-			remaining -= pad;
-			if (i == n_parts - 1)
-				while (remaining-- > 0) pad++;
-			while (pad-- > 0) screen_append(screen, " ", 1);
-		}
-		screen_append(screen, part, len);
-	}
-	screen_append(screen, "\x1b[0m", 4);
-
-	return 0;
-}
-
-static unsigned long total_microseconds(const struct timespec *ts) {
-	if (ts == NULL) return 0;
-
-	return ((unsigned long)ts->tv_sec * 1000000000ul +
-	        (unsigned long)ts->tv_nsec) /
-	       1000;
-}
-
-static int draw_message(ScreenBuffer *screen, const struct timespec *duration) {
-	char duration_msg[32];
-	int duration_len = snprintf(
-		duration_msg, sizeof duration_msg, " %lu us",
-		total_microseconds(duration));
-	if (duration_len < 0) return 0;
-
-	if ((uint)duration_len >= sizeof duration_msg)
-		duration_len = sizeof duration_msg;
-
-	int remaining = (int)E.cols - duration_len;
-	if (remaining < 0) return 0;
-
-	if (E.message.len > 0) {
-		size_t len = (size_t)(E.message.len > (size_t)remaining
-		                              ? (size_t)remaining
-		                              : E.message.len);
-		screen_append(screen, E.message.data, len);
-		remaining -= len;
-	}
-	while (remaining--) screen_append(screen, " ", 1);
-	screen_append(screen, duration_msg, (size_t)duration_len);
-
-	return 0;
-}
-
-static uint render(const Line *line, char *dst, const size_t size) {
-	uint length = 0;
-	for (uint i = 0; i < line->len && i < size - 1; i++)
-		if (line->chars[i] == '\t') {
-			dst[length++] = E.render_tab_characters[0];
-			while (length % TABSTOP)
-				dst[length++] = E.render_tab_characters[1];
-		} else dst[length++] = line->chars[i];
-
-	return length;
-}
-
-static void draw_line(ScreenBuffer *screen, Line *line) {
-	if (E.coloff >= line->len) return;
-	uint rendered_len =
-		render(line, E.render_buffer, sizeof(E.render_buffer));
-	uint visible_len = MIN(rendered_len - E.coloff, E.cols);
-	screen_append(screen, E.render_buffer + E.coloff, visible_len);
-}
-
-static void draw_lines(ScreenBuffer *screen, const struct timespec *duration) {
-	for (uint y = 0; y < E.rows; y++) {
-		uint line_index = y + E.rowoff;
-
-		if (E.rows - y == 2) draw_status(screen);
-		else if (E.rows - y == 1) draw_message(screen, duration);
-		else if (line_index < E.numlines)
-			draw_line(screen, E.lines + line_index);
-		else screen_append(screen, "~", 1);
-
-		// TODO: Welcome screen
-		if (NOLINES && y == E.rows / 3) draw_welcome_message(screen);
-
-		// Close of the line
-		screen_append(screen, "\x1b[K", 3);
-		if (E.rows - y > 1) screen_append(screen, "\r\n", 2);
-	}
-}
-
-static int place_cursor(ScreenBuffer *screen, uint x, uint y) {
-	char s[32];
-	int len = snprintf(s, sizeof s, "\x1b[%d;%dH", y + 1, x + 1);
-	if (len == -1 || len >= (int)sizeof s) DIE("place_cursor");
-	screen_append(screen, s, (uint)len);
-
-	return 0;
-}
-
-static struct timespec refresh_screen(const struct timespec *duration) {
-	E.screen.len = 0;
-	editor_scroll();
-	screen_append(&E.screen, "\x1b[?25l", 6); // hide cursor
-
-	place_cursor(&E.screen, 0, 0);
-	draw_lines(&E.screen, duration);
-	place_cursor(&E.screen, E.rx - E.coloff, E.cy - E.rowoff);
-
-	screen_append(&E.screen, "\x1b[?25h", 6); // show cursor
-	write(STDOUT_FILENO, E.screen.data, E.screen.len);
-
-	return get_current_time();
-}
-
-// -------------------------------- File I/O ----------------------------------
-static uint line_length(const char *chars, uint len) {
-	while (len > 0 && (chars[len - 1] == '\n' || chars[len - 1] == '\r'))
-		len--;
-
-	return len;
-}
-
-static void editor_append_line(const char *chars, uint len) {
-	uint i = E.numlines;
-	E.numlines++;
-	E.lines = realloc(E.lines, (sizeof *E.lines) * E.numlines);
-	len = line_length(chars, len);
-	E.lines[i].chars = strndup(chars, len);
-	E.lines[i].len = len;
-}
-
-static void editor_open(const char *restrict fname) {
-	FILE *f = fopen(fname, "r");
-	if (!f) DIE("fopen");
-
-	E.numlines = 0;
-	if (E.lines) free(E.lines);
-	E.lines = NULL;
-
-	char *line = NULL;
-	size_t linecap = 0;
-	ssize_t bytes_read;
-
-	while ((bytes_read = getline(&line, &linecap, f)) != -1)
-		editor_append_line(line, (uint)bytes_read);
-
-	if (line) free(line);
-	fclose(f);
-	if (E.filename) free(E.filename);
-	E.filename = strdup(fname);
-
-	format_message("Loaded: \"%s\"", fname);
-}
-
-static void editor_save(void) {
-	if (!E.filename) return;
-
-	FILE *f = fopen(E.filename, "w");
-	if (!f) DIE("fopen");
-
-	for (uint i = 0; i < E.numlines; i++) {
-		fputs(E.lines[i].chars, f);
-		fputs("\n", f);
-	}
-
-	fclose(f);
-
-	format_message("Saved: \"%s\"", E.filename);
-	E.dirty = false;
-}
-
 // ---------------------------------- Main ------------------------------------
-static void handle_resize(int sig) {
-	(void)sig;
-	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
-	refresh_screen(NULL);
-}
+static void lines_init(void) {
+	for (size_t i = 0; i < MAX_LINES - 1; i++)
+		line_pool[i].next = line_pool + i + 1;
 
-static void editor_init(void) {
+	freelist = line_pool;
+}
+void editor_init(uint rows, uint cols) {
+	E.quit = false;
+	E.error = NULL;
+	E.rows = rows;
+	E.cols = cols;
 	E.mode = MODE_NORMAL;
-	E.lines = NULL;
-	E.filename = NULL;
+	E.filename[0] = '\0';
 	E.numlines = 0;
 	E.rowoff = E.coloff = 0;
 	E.cx = E.cy = E.rx = 0;
@@ -1101,36 +604,5 @@ static void editor_init(void) {
 	E.chord.len = 0;
 	E.find.c = 0;
 
-	if (get_window_size(&E.rows, &E.cols) == -1) DIE("get_window_size");
-}
-
-static struct timespec
-elapsed_time(const struct timespec *start, const struct timespec *end) {
-	struct timespec elapsed;
-
-	elapsed.tv_sec = end->tv_sec - start->tv_sec;
-	elapsed.tv_nsec = end->tv_nsec - start->tv_nsec;
-
-	if (elapsed.tv_nsec < 0) {
-		elapsed.tv_nsec += 1000000000;
-		elapsed.tv_sec--;
-	}
-
-	return elapsed;
-}
-
-int main(int argc, char *argv[]) {
-	signal(SIGWINCH, handle_resize);
-	enable_raw_mode();
-	editor_init();
-	if (argc >= 2) editor_open(argv[1]);
-
-	struct timespec render_done, input_received = get_current_time();
-	struct timespec duration = {0};
-
-	while (true) {
-		render_done = refresh_screen(&duration);
-		duration = elapsed_time(&input_received, &render_done);
-		input_received = process_key();
-	}
+	lines_init();
 }
