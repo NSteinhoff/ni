@@ -7,12 +7,6 @@
 
 #include "ni.h"
 
-typedef union LineStorage LineStorage;
-union LineStorage {
-	LineStorage *next;
-	char chars[MAX_LINE_LEN];
-};
-
 static LineStorage line_pool[MAX_LINES];
 static LineStorage *freelist = NULL;
 
@@ -38,14 +32,9 @@ static char *get_line_storage(void) {
 	return chars;
 }
 
-static void free_line_storage(char *chars) {
+static void free_line_storage(LineStorage *storage) {
 	LineStorage *next = freelist;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-align"
-	freelist = (LineStorage *)chars;
-#pragma clang diagnostic pop
-
+	freelist = storage;
 	freelist->next = next;
 }
 
@@ -87,7 +76,7 @@ static void delete_line(uint at) {
 	if (NOLINES) return;
 	if (at >= E.numlines) at = LASTLINE;
 
-	free_line_storage(E.lines[at].chars);
+	free_line_storage(E.lines[at].storage_);
 
 	if (at < LASTLINE)
 		memmove(E.lines + at, E.lines + at + 1,

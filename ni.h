@@ -22,6 +22,12 @@
 // ---------------------------------- Types -----------------------------------
 typedef unsigned int uint;
 
+typedef union LineStorage LineStorage;
+union LineStorage {
+	LineStorage *next;
+	char chars[MAX_LINE_LEN];
+};
+
 typedef enum EditorMode {
 	MODE_NORMAL,
 	MODE_INSERT,
@@ -47,7 +53,12 @@ typedef struct MessageBuffer {
 
 typedef struct Line {
 	uint len;
-	char *chars;
+	// Allow "typesafe" punning when freeing a line's storage.  Otherwise,
+	// we'd have to do a pointer cast which could lead to bad alignment.
+	union {
+		char *chars;
+		LineStorage *storage_;
+	};
 } Line;
 
 typedef struct Find {
