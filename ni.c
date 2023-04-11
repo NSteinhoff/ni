@@ -293,35 +293,6 @@ static void enter_insert_mode(char c) {
 	E.mode = MODE_INSERT;
 }
 
-static void delete_motion(char c) {
-	Line *line = CLINE;
-	uint start, end;
-
-	switch (c) {
-	case 'w':
-		start = E.cx;
-		end = find_word(E.cx, line);
-		break;
-	case 'e':
-		start = E.cx;
-		end = find_end(E.cx, line) + 1;
-		break;
-	case 'b':
-		start = find_word_backwards(E.cx, line);
-		end = E.cx;
-		break;
-	case 'E':
-		start = find_end_backwards(E.cx, line);
-		end = E.cx;
-		break;
-
-	default: return;
-	}
-
-	delete_chars(start, end - start, line);
-	E.cx = start;
-}
-
 static void quit(int status) {
 	E.status = status;
 	E.quit = true;
@@ -435,12 +406,25 @@ static void process_key_normal(const int c) {
 			}
 			break;
 
+		case 'c':
 		case 'd':
 			switch (c) {
 			case 'd': delete_line(E.cy); break;
 			case 'w':
+				delete_chars(
+					E.cx, find_word(E.cx, CLINE) - E.cx,
+					CLINE);
+				break;
 			case 'e':
-			case 'b': delete_motion((char)c); break;
+				delete_chars(
+					E.cx, find_end(E.cx, CLINE) + 1 - E.cx,
+					CLINE);
+				break;
+			case 'b': {
+				uint from = find_word_backwards(E.cx, CLINE);
+				delete_chars(from, E.cx - from, CLINE);
+				E.cx = from;
+			} break;
 			case '0':
 				delete_chars(0, E.cx, CLINE);
 				E.cx = 0;
@@ -453,23 +437,7 @@ static void process_key_normal(const int c) {
 			case 'F':
 			case 'g': return;
 			}
-			break;
-
-		case 'c':
-			switch (c) {
-			case 'w':
-			case 'e':
-			case 'b': delete_motion((char)c); break;
-			case '0':
-				delete_chars(0, E.cx, CLINE);
-				E.cx = 0;
-				break;
-			case '$':
-				delete_chars(E.cx, CLINE->len - E.cx, CLINE);
-				break;
-			}
-
-			enter_insert_mode('i');
+			if (E.chord.keys[0] == 'c') enter_insert_mode('i');
 			break;
 
 		case 'f':
@@ -484,11 +452,18 @@ static void process_key_normal(const int c) {
 		}
 	} else if (E.chord.len == 3) {
 		switch (E.chord.keys[0]) {
+		case 'c':
 		case 'd':
 			switch (E.chord.keys[1]) {
 			case 'g':
 				switch (c) {
-				case 'e': delete_motion('E'); break;
+				case 'e': {
+					uint from =
+						find_end_backwards(E.cx, CLINE);
+					delete_chars(from, E.cx - from, CLINE);
+					E.cx = from;
+					break;
+				}
 				}
 				break;
 			case 'f':
@@ -513,6 +488,7 @@ static void process_key_normal(const int c) {
 				}
 				break;
 			}
+			if (E.chord.keys[0] == 'c') enter_insert_mode('i');
 			break;
 		}
 	}
