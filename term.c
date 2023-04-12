@@ -317,7 +317,7 @@ static int draw_status(ScreenBuffer *screen) {
 }
 
 static unsigned long total_microseconds(const struct timespec *ts) {
-	if (ts == NULL) return 0;
+	if (!ts) return 0;
 
 	return ((unsigned long)ts->tv_sec * 1000000000ul +
 	        (unsigned long)ts->tv_nsec) /

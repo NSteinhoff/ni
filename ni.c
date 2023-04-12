@@ -25,7 +25,7 @@ static LineStorage *freelist = NULL;
 Editor E;
 
 static char *get_line_storage(void) {
-	if (freelist == NULL) return NULL;
+	if (!freelist) return NULL;
 	char *chars = freelist->chars;
 	freelist = freelist->next;
 
@@ -42,7 +42,7 @@ static void free_line_storage(LineStorage *storage) {
 static void format_message(const char *restrict format, ...);
 Line *insert_line(uint at) {
 	char *chars = get_line_storage();
-	if (chars == NULL) {
+	if (!chars) {
 		strncpy(E.message, "Maximum number of lines reached.",
 		        sizeof E.message);
 		E.message[(sizeof E.message) - 1] = '\0';
@@ -93,7 +93,7 @@ static Line *split_line(uint at, uint split_at) {
 	if (split_at >= E.lines[at].len) return NULL;
 
 	Line *dst = insert_line(at + 1);
-	if (dst == NULL) return NULL;
+	if (!dst) return NULL;
 
 	Line *src = E.lines + at;
 	dst->len = src->len - split_at;
